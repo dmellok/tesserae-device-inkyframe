@@ -1,0 +1,37 @@
+{
+  "attribution": "https://github.com/paperlesspaper/epdoptimize",
+  "based_on": "paperlesspaper/epdoptimize · acep",
+  "bundled": false,
+  "dither": {
+    "algorithm": "floyd-steinberg",
+    "color_match": "rgb",
+    "diffusion_strength": 100,
+    "serpentine": true
+  },
+  "edges": {
+    "preserve_line_art": false,
+    "protect_native_colours": 0,
+    "smoothing_radius": 0
+  },
+  "family": "inky_7colour",
+  "name": "Inky 7-colour (slot-order workaround)",
+  "notes": "Same measured ACeP colours as paperlesspaper-inky7, with the yellow/green and red/blue FIELDS deliberately swapped. PaletteColors.as_tuples() always emits black, white, yellow, red, blue, green, orange (the Spectra 6 slot order), but the inky_7colour gamut's nibbles run black, white, green, blue, red, yellow, orange. Swapping the two affected pairs here cancels that out, so the panel paints the colour the source asked for. Delete this profile once the slot order is made gamut-aware upstream.",
+  "palette": {
+    "black": "#191E21",
+    "white": "#F1F1F1",
+    "yellow": "#53A428",
+    "red": "#31318F",
+    "blue": "#D20E13",
+    "green": "#F3CF11",
+    "orange": "#B85E1C"
+  },
+  "slug": "inky7-slot-order-fix",
+  "tone": {
+    "contrast": 1.0,
+    "exposure": 0,
+    "lab_compress_max": 100,
+    "lab_compress_min": 0,
+    "s_curve": 0,
+    "saturation": 1.0
+  }
+}

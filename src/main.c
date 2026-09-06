@@ -1,0 +1,431 @@
+// Tesserae client for the Pimoroni Inky Frame 7.3".
+//
+// One wake cycle:
+//   wake reason -> Wi-Fi -> (pair if no token) -> GET /frame (ETag) ->
+//   download into PSRAM -> POST /status -> radio off -> paint -> persist ->
+//   sleep for next_poll_s (RTC alarm + power off on battery; resident on USB).
+//
+// The panel is a thin client: every frame arrives pre-dithered and packed in
+// the panel's own nibble order, so the bytes stream straight to the glass.
+#include <stdio.h>
+#include <string.h>
+#include "pico/stdlib.h"
+
+#include "board.h"
+#include "config.h"
+#include "epd.h"
+#include "frame.h"
+#include "log.h"
+#include "power.h"
+#include "psram.h"
+#include "rtc.h"
+#include "screen.h"
+#include "storage.h"
+#include "tesserae.h"
+#include "wifi.h"
+
+// What is on the glass, kept in the RTC's RAM byte across power-off so status
+// pages draw once and a frame is re-fetched without ETag after one was shown.
+enum { SCREEN_UNKNOWN = 0, SCREEN_FRAME, SCREEN_PAIRING, SCREEN_NO_DASHBOARD, SCREEN_ERROR };
+
+static const int32_t BACKOFF_S[] = BACKOFF_STEPS_S;
+#define BACKOFF_N (sizeof BACKOFF_S / sizeof BACKOFF_S[0])
+static const char *const BUTTON_NAMES[5] = { BUTTON_A_NAME, BUTTON_B_NAME, BUTTON_C_NAME, BUTTON_D_NAME, BUTTON_E_NAME };
+
+static bool s_on_usb;
+static uint8_t s_screen;
+static uint32_t s_boot_count;
+
+static void set_screen(uint8_t s) { s_screen = s; pcf_ram_set(s); }
+
+static const char *current_kind(void)  { return storage_fallback_kind() ? DEVICE_KIND_FALLBACK : DEVICE_KIND; }
+
+static tess_identity_t identity(void)
+{
+    return (tess_identity_t){ storage_device_id(), current_kind(), DEVICE_GAMUT, wifi_mac() };
+}
+
+static const char *button_name(int index)
+{
+    if (index < 0 || index > 4) return NULL;
+    return BUTTON_NAMES[index][0] ? BUTTON_NAMES[index] : NULL;
+}
+
+// Unreachable Wi-Fi / server: escalating backoff, drawing an error page only
+// when the outage looks persistent (so a blip never flashes the panel).
+static int32_t fail_backoff(const char *what, const char *detail)
+{
+    uint8_t stage = storage_backoff();
+    int32_t sleep_s = BACKOFF_S[stage < BACKOFF_N ? stage : BACKOFF_N - 1];
+    if (stage + 1 < BACKOFF_N) storage_set_backoff(stage + 1);
+    LOGW("%s: %s (backoff stage %u, sleeping %ld s)", what, detail, stage, (long)sleep_s);
+    bool persistent = stage >= 2 || s_boot_count <= 1 || s_screen == SCREEN_UNKNOWN;
+    wifi_off();
+    if (persistent && s_screen != SCREEN_ERROR) {
+        screen_message(what, detail, "Retrying every few minutes.", "Server: " TESSERAE_SERVER_URL);
+        set_screen(SCREEN_ERROR);
+    }
+    return sleep_s;
+}
+
+static void set_clock(uint32_t epoch)
+{
+    if (epoch < 1600000000u) return;
+    uint32_t now = pcf_get_epoch();
+    if (!pcf_time_valid() || (now > epoch ? now - epoch : epoch - now) > 5) {
+        pcf_set_epoch(epoch);
+        LOGI("rtc: clock set to %lu", (unsigned long)epoch);
+    }
+}
+
+static void apply_pairing(const tess_pair_t *r)
+{
+    storage_set_token(r->token);
+    if (r->device_id[0] && strcmp(r->device_id, storage_device_id()) != 0) {
+        LOGI("pair: server assigned device id '%s'", r->device_id);
+        storage_set_device_id(r->device_id);
+    }
+    if (r->sleep_interval_s > 0) storage_set_sleep_s(power_clamp_sleep_s(r->sleep_interval_s));
+    storage_set_etag("");
+    set_clock(r->server_time);
+    LOGI("pair: registered as '%s'", storage_device_id());
+}
+
+// Announce the catalog kind if the server knows it, else the stock kind.
+static void choose_kind(const char *base)
+{
+    tess_identity_t id = { storage_device_id(), DEVICE_KIND, DEVICE_GAMUT, wifi_mac() };
+    tess_kind_probe_t p = tess_probe_kind(base, &id);
+    if (p == TESS_KIND_MISSING) {
+        if (!storage_fallback_kind())
+            LOGW("kind: server does not know '%s'; using '%s' (install server/hardware/pimoroni/*.json)", DEVICE_KIND, DEVICE_KIND_FALLBACK);
+        storage_set_fallback_kind(true);
+    } else if (p == TESS_KIND_EXISTS) {
+        if (storage_fallback_kind()) LOGI("kind: server now knows '%s'", DEVICE_KIND);
+        storage_set_fallback_kind(false);
+    }
+}
+
+// No token: announce on /discover (or /register with a pairing code) until
+// the admin has clicked Register. Returns 0 when paired, else seconds to
+// sleep before trying again.
+static int32_t pair(const char *base)
+{
+    choose_kind(base);
+    absolute_time_t budget = make_timeout_time_ms(PAIRING_AWAKE_BUDGET_S * 1000);
+    bool use_code = strlen(TESSERAE_PAIRING_CODE) > 0;
+    tess_identity_t id = identity();
+
+    while (true) {
+        tess_pair_t r;
+        if (use_code) tess_register(base, &id, TESSERAE_PAIRING_CODE, &r);
+        else tess_discover(base, &id, &r);
+
+        if (r.registered) {
+            apply_pairing(&r);
+            storage_set_backoff(0);
+            return 0;
+        }
+        if (r.code <= 0) return fail_backoff("Server unreachable", "Could not reach the Tesserae server.");
+        if (r.code == 400 || r.code == 401 || r.code == 403) {
+            LOGE("pair: rejected (%d): %s", r.code, r.error);
+            char l1[96];
+            snprintf(l1, sizeof l1, "HTTP %d: %s", r.code, r.error);
+            if (s_screen != SCREEN_ERROR) {
+                screen_message("Pairing rejected", l1, use_code ? "Check TESSERAE_PAIRING_CODE." : "Check the device id / kind.", "");
+                set_screen(SCREEN_ERROR);
+            }
+            wifi_off();
+            return 3600;
+        }
+        // 200 registered:false (waiting on the admin) or 429.
+        if (s_screen != SCREEN_PAIRING) {
+            screen_pairing(storage_device_id(), wifi_mac(), TESSERAE_SERVER_URL, current_kind(),
+                           storage_fallback_kind() ? "Note: catalog kind not installed on the server; using the stock kind." : "");
+            set_screen(SCREEN_PAIRING);
+        }
+        // Clamp: this value comes from the server, and an absurd one would
+        // overflow the resident-sleep deadline or alias the RTC alarm's
+        // day-of-month field into a date the device never wakes on.
+        int wait_s = r.retry_after_s > 0 ? r.retry_after_s : 30;
+        if (wait_s < 5) wait_s = 5;
+        if (wait_s > 900) wait_s = 900;
+        LOGI("pair: waiting for Register in the UI, retry in %d s", wait_s);
+        if (time_reached(budget)) {
+            wifi_off();
+            return wait_s > 60 ? wait_s : 60;
+        }
+        sleep_ms((uint32_t)wait_s * 1000);
+    }
+}
+
+// GET /frame and download. Returns the HTTP status; `*downloaded` is set when
+// a complete frame is in PSRAM (painted later, with the radio down). `*button`
+// is cleared once the server has acknowledged it.
+static int fetch_frame(const char *base, const char **button, uint32_t event_id, bool *downloaded, char *etag_out, size_t etag_cap)
+{
+    *downloaded = false;
+    const char *etag = storage_etag();
+    // A status page is showing, or a refresh press: always take a full frame.
+    if (s_screen != SCREEN_FRAME || (*button && strcmp(*button, "refresh") == 0)) etag = "";
+
+    tess_frame_t fr;
+    tess_get_frame(base, storage_device_id(), storage_token(), etag, *button, event_id, &fr);
+    if (fr.code == 200 || fr.code == 304 || fr.code == 204) *button = NULL;   // acknowledged
+
+    if (fr.code == 200) {
+        if ((fr.panel_w && fr.panel_w != PANEL_W) || (fr.panel_h && fr.panel_h != PANEL_H))
+            LOGW("frame: server thinks the panel is %dx%d; check the device kind / panel size", fr.panel_w, fr.panel_h);
+        int dl = frame_download(fr.url);
+        if (dl == 200) {
+            *downloaded = true;
+            snprintf(etag_out, etag_cap, "%s", fr.etag);
+        } else {
+            char msg[96];
+            snprintf(msg, sizeof msg, "frame download failed: %d, %u bytes", dl, (unsigned)frame_received());
+            LOGE("frame: %s; keeping last image", msg);
+            tess_post_log(base, storage_device_id(), storage_token(), "error", msg);
+        }
+    } else if (fr.code == 304) {
+        LOGI("frame: unchanged");
+    } else if (fr.code == 204) {
+        LOGI("frame: nothing rendered for this device yet");
+    } else if (fr.code == 401 || fr.code == 403) {
+        LOGW("frame: auth failed (%d); dropping token to re-pair", fr.code);
+        storage_clear_pairing();
+    } else {
+        LOGW("frame: request failed (%d); keeping last image", fr.code);
+    }
+    return fr.code;
+}
+
+static void paint_downloaded(const char *etag)
+{
+    board_led(LED_ACTIVITY, 60);
+    if (frame_paint()) {
+        storage_set_etag(etag);
+        set_screen(SCREEN_FRAME);
+    } else {
+        LOGE("frame: paint failed; ETag not committed");
+    }
+    board_led(LED_ACTIVITY, 20);
+}
+
+static void no_dashboard_page(void)
+{
+    if (s_screen == SCREEN_NO_DASHBOARD) return;
+    char l1[80];
+    snprintf(l1, sizeof l1, "Registered as '%s'.", storage_device_id());
+    screen_message("Waiting for a dashboard", l1, "Bind a dashboard to this device in Tesserae", "and press Send.");
+    set_screen(SCREEN_NO_DASHBOARD);
+}
+
+static void telemetry(tess_telemetry_t *t, const char *button, uint32_t event_id)
+{
+    memset(t, 0, sizeof *t);
+    t->battery_mv = s_on_usb ? 0 : power_vsys_mv();
+    t->rssi = wifi_rssi();
+    t->ip = wifi_ip();
+    t->mac = wifi_mac();
+    t->button = button;
+    t->button_event_id = event_id;
+    t->can_stay_awake = s_on_usb;
+}
+
+// Stay awake briefly after a button wake to catch follow-up presses.
+static void button_linger(const char *base, int32_t window_s)
+{
+    absolute_time_t deadline = make_timeout_time_ms((uint32_t)window_s * 1000);
+    LOGI("button: lingering %ld s for more presses", (long)window_s);
+    while (!time_reached(deadline)) {
+        int b = board_any_button_down();
+        if (b < 0) { sleep_ms(30); continue; }
+        absolute_time_t t = make_timeout_time_ms(2000);
+        while (board_button_down(b) && !time_reached(t)) sleep_ms(20);
+        const char *name = button_name(b);
+        if (!name) continue;
+        board_led_button(b, 60);
+        bool downloaded = false; char etag[80] = "";
+        const char *button = name;
+        int code = fetch_frame(base, &button, storage_next_event_id(), &downloaded, etag, sizeof etag);
+        if (downloaded) paint_downloaded(etag);
+        else if (code == 204) no_dashboard_page();
+        board_led_button(b, 0);
+        if (code == 401 || code == 403) return;   // token gone; re-pair next wake
+        deadline = make_timeout_time_ms((uint32_t)window_s * 1000);
+    }
+}
+
+// Mains-powered panels: keep Wi-Fi up and poll instead of sleeping. Returns
+// when the server turns always_on off or the token dies.
+static void always_on_loop(const char *base)
+{
+    LOGI("always-on: polling every %ld s", (long)storage_awake_poll_s());
+    int32_t next_poll = storage_awake_poll_s();
+    uint32_t since_status = 0;
+    while (true) {
+        absolute_time_t deadline = make_timeout_time_ms((uint32_t)next_poll * 1000);
+        int pressed = -1;
+        while (!time_reached(deadline)) {
+            int b = board_any_button_down();
+            if (b >= 0 && button_name(b)) { pressed = b; while (board_button_down(b)) sleep_ms(20); break; }
+            sleep_ms(50);
+        }
+        if (!wifi_connected() && !wifi_connect()) continue;
+        const char *button = button_name(pressed);
+        uint32_t event_id = button ? storage_next_event_id() : 0;
+        bool downloaded = false; char etag[80] = "";
+        int code = fetch_frame(base, &button, event_id, &downloaded, etag, sizeof etag);
+        if (downloaded) paint_downloaded(etag);
+        else if (code == 204) no_dashboard_page();
+        if (code == 401 || code == 403) return;
+        since_status += (uint32_t)next_poll;
+        if (since_status >= 60 || button) {
+            tess_telemetry_t t; telemetry(&t, button, event_id);
+            tess_status_t s;
+            tess_post_status(base, storage_device_id(), storage_token(), &t, &s);
+            if (s.code == 200) {
+                set_clock(s.server_time);
+                if (s.always_on == 0) { LOGI("always-on: turned off by config"); storage_set_always_on(false); return; }
+                if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
+                next_poll = (s.next_poll_s > 0 && s.next_poll_s < 300) ? s.next_poll_s : storage_awake_poll_s();
+                if (next_poll < 5) next_poll = 5;
+            }
+            since_status = 0;
+            storage_commit();   // always-on can run for weeks; do not lose the ETag
+        }
+    }
+}
+
+#ifdef SELFTEST_BASE_URL
+// Bench self-test: no Tesserae involved. Download and paint the synthetic
+// frame from tools/make_test_frames.py.
+static int32_t selftest(void)
+{
+    if (!wifi_connect()) return fail_backoff("Wi-Fi unavailable", "self-test");
+    s_on_usb = wifi_on_usb();
+    int dl = frame_download(SELFTEST_BASE_URL "/test.bin");
+    LOGI("selftest: test.bin -> http %d, %u bytes", dl, (unsigned)frame_received());
+    wifi_off();
+    if (dl == 200) frame_paint();
+    return 3600;
+}
+#endif
+
+// One wake cycle. Returns the number of seconds to sleep.
+static int32_t cycle(const char *wake_button)
+{
+#ifdef SELFTEST_BASE_URL
+    return selftest();
+#endif
+    if (!wifi_connect()) return fail_backoff("Wi-Fi unavailable", "Could not join '" WIFI_SSID "'.");
+    board_led(LED_CONNECTION, 20);
+    s_on_usb = wifi_on_usb();
+    uint32_t vsys = power_sample_vsys_mv();
+    LOGI("power: %s, vsys %lu mV", s_on_usb ? "USB" : "battery", (unsigned long)vsys);
+
+    const char *base = wifi_server_base();
+    if (!base[0]) return fail_backoff("Server not found", "Cannot resolve " TESSERAE_SERVER_URL);
+    LOGI("server base: %s", base);
+
+    if (!storage_token()[0]) {
+        int32_t s = pair(base);
+        if (s) return s;
+    } else if (storage_fallback_kind()) {
+        // Registered under the stock kind: see whether the catalog entry has
+        // been installed since, and let the MAC-match discover heal the kind.
+        choose_kind(base);
+        if (!storage_fallback_kind()) {
+            tess_pair_t r; tess_identity_t id = identity();
+            tess_discover(base, &id, &r);
+            if (r.registered) apply_pairing(&r);
+            else storage_set_fallback_kind(true);
+        }
+    }
+
+    // 1. Frame.
+    const char *button = wake_button;
+    uint32_t event_id = button ? storage_next_event_id() : 0;
+    bool downloaded = false; char etag[80] = "";
+    int frame_code = fetch_frame(base, &button, event_id, &downloaded, etag, sizeof etag);
+    if (frame_code <= 0) return fail_backoff("Server unreachable", "Frame request failed.");
+    if (!storage_token()[0]) { wifi_off(); return 30; }   // re-pair next wake
+
+    // 2. Heartbeat: drives this cycle's sleep via next_poll_s and carries any
+    //    button press the frame request could not deliver.
+    tess_telemetry_t t; telemetry(&t, button, event_id);
+    tess_status_t s;
+    tess_post_status(base, storage_device_id(), storage_token(), &t, &s);
+    if (s.code == 401 || s.code == 403) { storage_clear_pairing(); wifi_off(); return 30; }
+    if (s.code == 200) {
+        set_clock(s.server_time);
+        if (s.sleep_interval_s > 0) storage_set_sleep_s(power_clamp_sleep_s(s.sleep_interval_s));
+        if (s.button_wake_s >= 0) storage_set_button_wake_s(s.button_wake_s);
+        if (s.always_on >= 0) storage_set_always_on(s.always_on == 1);
+        if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
+    }
+    storage_set_backoff(0);
+
+    // 3. Paint (radio stays up only if we may need it again right away).
+    bool linger = wake_button && storage_button_wake_s() > 0;
+    bool always_on = s_on_usb && storage_always_on();
+    if (!linger && !always_on) wifi_off();
+    if (downloaded) paint_downloaded(etag);
+    else if (frame_code == 204) no_dashboard_page();
+
+    if (linger) button_linger(base, storage_button_wake_s());
+    if (always_on) always_on_loop(base);
+    wifi_off();
+
+    // 4. Sleep. next_poll_s wins; wake_at (synchronised wake) is converted to
+    //    a delta at the moment we actually go down.
+    int32_t sleep_s = s.next_poll_s > 0 ? power_clamp_sleep_s(s.next_poll_s) : power_clamp_sleep_s(storage_sleep_s());
+    if (s.wake_at && pcf_time_valid()) {
+        uint32_t now = pcf_get_epoch();
+        if (now > 1600000000u && s.wake_at > now + 5) sleep_s = power_clamp_sleep_s((int32_t)(s.wake_at - now));
+    }
+    return sleep_s;
+}
+
+int main(void)
+{
+    board_init();
+    board_led(LED_ACTIVITY, 20);
+    stdio_init_all();
+#ifdef DEV_BOOT_LOG_DELAY_MS
+    sleep_ms(DEV_BOOT_LOG_DELAY_MS);   // bench: let a serial monitor attach
+#endif
+    wake_event_t wake = board_wake_event();
+
+    LOGI("tesserae-inkyframe v%s, kind %s, panel %dx%d", FW_VERSION, DEVICE_KIND, PANEL_W, PANEL_H);
+    LOGI("wake: %s", board_wake_name(wake));
+    storage_begin();
+    pcf_init();
+    s_screen = pcf_ram_get() & 0x0F;
+    if (s_screen > SCREEN_ERROR) s_screen = SCREEN_UNKNOWN;
+    epd_init();
+    if (!psram_init() || !psram_test()) LOGE("psram: FAILED; frames cannot be stored");
+    LOGI("device id '%s', kind '%s', screen state %u, rtc %s (%lu)", storage_device_id(), current_kind(), s_screen,
+         pcf_time_valid() ? "valid" : "unset", (unsigned long)pcf_get_epoch());
+
+    const char *wake_button = NULL;
+    if (wake >= WAKE_BUTTON_A && wake <= WAKE_BUTTON_E) {
+        int idx = wake - WAKE_BUTTON_A;
+        wake_button = button_name(idx);
+        board_led_button(idx, 40);
+    }
+
+    while (true) {
+        s_boot_count++;
+        int32_t sleep_s = cycle(wake_button);
+        storage_commit();
+        int pressed = -1;
+        power_sleep((uint32_t)sleep_s, s_on_usb, &pressed);
+        // Only reached on USB power: run the next cycle in place.
+        wake_button = button_name(pressed);
+        for (int i = 0; i < 5; i++) board_led_button(i, 0);
+        if (pressed >= 0) board_led_button(pressed, 40);
+        board_led(LED_ACTIVITY, 20);
+        LOGI("wake: %s (USB resident)", pressed >= 0 ? "button" : "timer");
+    }
+}
