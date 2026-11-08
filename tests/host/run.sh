@@ -11,7 +11,7 @@ if [ ! -f "$DEPS/src/monocypher.c" ]; then
     git -C "$DEPS" checkout -q "$MONO_COMMIT"
 fi
 SRC=../../src
-cc -std=c11 -O1 -Wall -Wextra -DOTA_TRUST_TEST_KEY=1 \
+cc -std=gnu11 -O1 -Wall -Wextra -DOTA_TRUST_TEST_KEY=1 \
    -I"$SRC" -I"$DEPS/src" \
    test_ota.c "$SRC/ota_verify.c" "$SRC/sha256.c" "$SRC/vendor/cJSON.c" \
    "$DEPS/src/monocypher.c" "$DEPS/src/optional/monocypher-ed25519.c" \

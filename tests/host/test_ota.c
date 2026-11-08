@@ -17,7 +17,8 @@ static char *slurp(const char *path, size_t *len)
     if (!f) { printf("missing %s\n", path); exit(2); }
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     char *b = malloc((size_t)n + 1);
-    fread(b, 1, (size_t)n, f); fclose(f); b[n] = 0;
+    if (fread(b, 1, (size_t)n, f) != (size_t)n) { printf("short read %s\n", path); exit(2); }
+    fclose(f); b[n] = 0;
     if (len) *len = (size_t)n;
     return b;
 }
