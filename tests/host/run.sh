@@ -33,3 +33,9 @@ cc -std=gnu11 -O1 -Wall -Wextra -I"$SRC" -I"$DEPS/src" -I"$MBEDTLS/include" -I. 
    "$MB_SRC/platform.c" "$MB_SRC/aesni.c" "$MB_SRC/aesce.c" \
    -o .deps/test_relay
 .deps/test_relay
+
+# Deck and album logic, ported with their tests from tesserae-device-firmware.
+cc -std=gnu11 -O1 -Wall -Wextra -I"$SRC" -I"$SRC/vendor" test_deck.c "$SRC/deck.c" "$SRC/vendor/cJSON.c" -o .deps/test_deck
+.deps/test_deck
+cc -std=gnu11 -O1 -Wall -Wextra -I"$SRC" -I"$SRC/vendor" test_frame_collection.c "$SRC/frame_collection.c" "$SRC/vendor/cJSON.c" -o .deps/test_frame_collection
+.deps/test_frame_collection

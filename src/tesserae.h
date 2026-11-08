@@ -60,6 +60,9 @@ typedef struct {
     const char *ota_signature;
     uint32_t diag_sent;       // the diag id this beat carried, 0 if none
     bool logs_upload;         // the server asked for the log ring
+    // Deck / album version announcements (cache.c); has_* false = unbound.
+    bool has_deck, has_album;
+    char deck_version[32], album_version[32];
     int32_t awake_poll_s;     // -1 if absent
 } tess_status_t;
 

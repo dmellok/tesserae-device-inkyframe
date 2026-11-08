@@ -11,6 +11,8 @@ against the following third-party work, each under its own permissive licence.
 | font8x8_basic (Daniel Hepper, after Marcel Sondaar and the IBM VGA fonts) | [src/vendor/font8x8_basic.h](src/vendor/font8x8_basic.h) | Public domain |
 | DHCP server (Damien P. George, from MicroPython, via pico-examples) | [src/vendor/dhcpserver.c](src/vendor/dhcpserver.c), [dhcpserver.h](src/vendor/dhcpserver.h) | MIT, in the file header |
 | DNS server (Raspberry Pi (Trading) Ltd., from pico-examples) | [src/vendor/dnsserver.c](src/vendor/dnsserver.c), [dnsserver.h](src/vendor/dnsserver.h) | BSD 3-Clause, in the file header |
+| FatFs R0.15a (ChaN) | [src/vendor/fatfs/](src/vendor/fatfs/) | 1-clause BSD, see [src/vendor/fatfs/LICENSE.txt](src/vendor/fatfs/LICENSE.txt) |
+| Deck and album logic (deck.c, frame_collection.c and their tests) | [src/deck.c](src/deck.c), [src/frame_collection.c](src/frame_collection.c) | From tesserae-device-firmware |
 | QR Code generator library (Project Nayuki) | [src/vendor/qrcodegen.c](src/vendor/qrcodegen.c), [qrcodegen.h](src/vendor/qrcodegen.h) | MIT, in the file header |
 
 ## Built against, not bundled

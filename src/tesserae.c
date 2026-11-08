@@ -8,6 +8,7 @@
 #include "log.h"
 #include "ota.h"
 #include "diag.h"
+#include "cache.h"
 #include "vendor/cJSON.h"
 #include "wifi.h"
 
@@ -133,8 +134,10 @@ void tess_get_frame(const char *base, const char *device_id, const char *token, 
     out->button_wake_s = -1;
     char url[320];
     int n = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", base, device_id);
+    const char *cq = cache_frame_query();
+    if (cq[0]) n += snprintf(url + n, sizeof url - n, "?%s", cq);
     if (button && button[0]) {
-        n += snprintf(url + n, sizeof url - n, "?button=%s&button_event_id=%lu", button, (unsigned long)event_id);
+        n += snprintf(url + n, sizeof url - n, "%cbutton=%s&button_event_id=%lu", cq[0] ? '&' : '?', button, (unsigned long)event_id);
         // The physical button rides beside the action, so the server's
         // button map can bind each one on its own (Tesserae 0.505+).
         if (button_key && button_key[0] && n < (int)sizeof url)
@@ -186,6 +189,7 @@ char *tess_status_body(const tess_telemetry_t *t, uint32_t *diag_sent)
     if (t->can_stay_awake) cJSON_AddBoolToObject(o, "can_stay_awake", true);
     ota_add_capability(o);
     uint32_t sent = diag_add_status(o);
+    cache_add_status(o);
     if (diag_sent) *diag_sent = sent;
     if (t->button && t->button[0]) {
         cJSON_AddStringToObject(o, "button", t->button);
@@ -221,6 +225,10 @@ void tess_post_status(const char *base, const char *device_id, const char *token
             out->next_poll_s = json_int(j, "next_poll_s", -1);
             out->wake_at = json_u32(j, "wake_at");
             out->server_time = json_u32(j, "server_time");
+            const cJSON *dk = cJSON_GetObjectItemCaseSensitive(j, "deck");
+            if (cJSON_IsObject(dk)) { out->has_deck = true; json_str(dk, "version", out->deck_version, sizeof out->deck_version); }
+            const cJSON *al = cJSON_GetObjectItemCaseSensitive(j, "collection");
+            if (cJSON_IsObject(al)) { out->has_album = true; json_str(al, "version", out->album_version, sizeof out->album_version); }
             const cJSON *logs = cJSON_GetObjectItemCaseSensitive(j, "logs");
             out->logs_upload = cJSON_IsObject(logs) && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(logs, "upload"));
             const cJSON *ota = cJSON_GetObjectItemCaseSensitive(j, "ota");

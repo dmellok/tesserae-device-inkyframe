@@ -107,6 +107,7 @@
 #define PIN_EINK_RESET       27
 #define PIN_EINK_DC          28
 #define PIN_VSYS_ADC         29     // Pico W: VSYS/3, ADC channel 3
+#define PIN_SD_CS            22     // microSD (SPI0, shared with the panel and PSRAM)
 
 // ---- buttons ----------------------------------------------------------------
 // Tesserae button action for each front button. Every press also carries its
@@ -193,3 +194,11 @@
 // Sealed frames are staged in PSRAM here before they are opened into the
 // frame store at 0.
 #define RELAY_PSRAM_OFFSET        (4u * 1024u * 1024u)
+
+// ---- SD card cache (src/cache.c) --------------------------------------------
+// Frames being downloaded to the card are staged in PSRAM here.
+#define CACHE_PSRAM_OFFSET        (6u * 1024u * 1024u)
+// Album intervals are clamped like the sleep interval, as on the ESP32 firmware.
+#define ALBUM_MIN_INTERVAL_S      SLEEP_MIN_S
+#define ALBUM_MAX_INTERVAL_S      SLEEP_MAX_S
+#define ALBUM_DEFAULT_INTERVAL_S  SLEEP_DEFAULT_S

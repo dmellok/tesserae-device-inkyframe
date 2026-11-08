@@ -124,6 +124,19 @@ relayed back. The crypto is tested on the host against the relay contract's
 golden vectors. Removing the frame in Tesserae revokes the pairing, and the
 frame opens setup for a new code.
 
+## Offline decks and albums (microSD)
+
+With a microSD card in the Frame (FAT32 or exFAT), the frame advertises
+Tesserae's deck and album caches. A deck bound to the frame is copied to the
+card, so a button press that moves between its pages paints straight from the
+card with no network at all; an album plays from the card on its own interval,
+even while the server is down. Everything lives in `/tesserae` on the card, so
+other files are left alone, and every cached frame is checked against its
+manifest's digest and length before it is painted. Where the card is missing
+or unreadable, the frame simply works from the network. The deck and album
+logic (`deck.c`, `frame_collection.c`) is ported unchanged from the ESP32
+firmware, with its tests (`tests/host`).
+
 ## Logs and failure reports
 
 The frame keeps its recent log in a 24 KB RAM ring. Collect logs from the

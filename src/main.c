@@ -19,6 +19,7 @@
 #include "hardware/watchdog.h"
 
 #include "board.h"
+#include "cache.h"
 #include "config.h"
 #include "diag.h"
 #include "epd.h"
@@ -499,6 +500,15 @@ static int32_t cycle(int wake_button)
 #ifdef SELFTEST_BASE_URL
     return selftest();
 #endif
+    // The card first: a deck page for this press, or a due album frame,
+    // paints with no network at all. A press served here is not reported
+    // as a press (the server never saw it); the page goes up on the check-in.
+    if (wake_button >= 0 && cache_local_nav(button_name(wake_button))) {
+        set_screen(SCREEN_FRAME);
+        wake_button = -1;
+    } else if (wake_button < 0 && pcf_time_valid() && cache_album_due(pcf_get_epoch())) {
+        set_screen(SCREEN_FRAME);
+    }
     if (!wifi_connect()) {
         // An update on trial that cannot join Wi-Fi goes back to the previous
         // image rather than risk a frame that can never be updated again.
@@ -580,6 +590,7 @@ static int32_t cycle(int wake_button)
         if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
         diag_acknowledge(s.diag_sent);
         if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
+        cache_note_status(s.deck_version, s.has_deck, s.album_version, s.has_album, base, storage_device_id(), storage_token());
         // A signed update: on success this installs and reboots into it.
         if (s.ota_payload) ota_offer(s.ota_payload, s.ota_signature, current_kind(), s_on_usb, vsys);
 #ifdef OTA_BENCH_DESCRIPTOR_URL
@@ -592,8 +603,10 @@ static int32_t cycle(int wake_button)
     bool linger = wake_button >= 0 && storage_button_wake_s() > 0;
     bool always_on = s_on_usb && storage_always_on();
     if (!linger && !always_on) wifi_off();
-    if (downloaded) paint_downloaded(etag);
-    else if (frame_code == 204) no_dashboard_page();
+    if (downloaded) {
+        paint_downloaded(etag);
+        if (pcf_time_valid()) cache_note_network_frame(pcf_get_epoch());
+    } else if (frame_code == 204) no_dashboard_page();
 
     if (linger) button_linger(base, storage_button_wake_s());
     if (always_on) always_on_loop(base);
@@ -606,6 +619,9 @@ static int32_t cycle(int wake_button)
         uint32_t now = pcf_get_epoch();
         if (now > 1600000000u && s.wake_at > now + 5) sleep_s = power_clamp_sleep_s((int32_t)(s.wake_at - now));
     }
+    // Wake for the album's next frame if it comes first.
+    int32_t album = pcf_time_valid() ? cache_album_wait_s(pcf_get_epoch()) : -1;
+    if (album >= 0 && album < sleep_s) sleep_s = album < SLEEP_MIN_S ? SLEEP_MIN_S : album;
     return sleep_s;
 }
 
@@ -613,6 +629,7 @@ static int32_t cycle(int wake_button)
 static void settle_settings(void)
 {
     settings_commit();   // relay pairing state, if it changed
+    cache_commit();      // deck page and album position, if they changed
     if (s_reached_server) settings_set_verified();
     if (s_used_pairing_code) settings_clear_pairing_code();
     s_reached_server = s_used_pairing_code = false;
@@ -671,6 +688,7 @@ int main(void)
     if (s_screen > SCREEN_ERROR) s_screen = SCREEN_UNKNOWN;
     epd_init();
     if (!psram_init() || !psram_test()) LOGE("psram: FAILED; frames cannot be stored");
+    cache_begin();
     LOGI("device id '%s', kind '%s', screen state %u, rtc %s (%lu)", storage_device_id(), current_kind(), s_screen,
          pcf_time_valid() ? "valid" : "unset", (unsigned long)pcf_get_epoch());
 
