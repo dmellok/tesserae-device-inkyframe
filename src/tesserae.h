@@ -54,6 +54,10 @@ typedef struct {
     int32_t sleep_interval_s; // -1 if absent
     int32_t button_wake_s;    // -1 if absent
     int always_on;            // -1 absent, 0/1
+    // A signed OTA descriptor, when the server offered one (else NULL). Points
+    // into storage owned by tesserae.c, valid until the next status call.
+    const char *ota_payload;
+    const char *ota_signature;
     int32_t awake_poll_s;     // -1 if absent
 } tess_status_t;
 

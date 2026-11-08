@@ -138,6 +138,16 @@
 // two below them for the portal settings (settings.c).
 #define FLASH_STATE_OFFSET    (PICO_FLASH_SIZE_BYTES - 2u * 4096u)
 #define FLASH_SETTINGS_OFFSET (PICO_FLASH_SIZE_BYTES - 4u * 4096u)
+// Where the firmware reads those sectors. On the RP2350 the image runs from an
+// A/B partition through address translation, so XIP_BASE is a window onto the
+// partition, not the whole flash; the untranslated alias reaches the sectors
+// wherever the image lives. (The SDK's flash erase/program take physical
+// offsets either way.)
+#if PICO_RP2350
+#define FLASH_READ_BASE       XIP_NOCACHE_NOALLOC_NOTRANSLATE_BASE
+#else
+#define FLASH_READ_BASE       XIP_BASE
+#endif
 
 // ---- sleep and retry --------------------------------------------------------
 // Bounds applied to server sleep values; the RTC alarm has no month field, so
@@ -166,3 +176,14 @@
 // ---- misc -------------------------------------------------------------------
 #define EPD_REFRESH_TIMEOUT_MS    50000
 #define WIFI_HOSTNAME             "inky-frame-73"
+
+// ---- over-the-air updates (RP2350 only; see src/ota.h) ----------------------
+// Downloaded images are staged in PSRAM above the frame store.
+#define OTA_PSRAM_OFFSET          (1024u * 1024u)
+#define OTA_DOWNLOAD_TIMEOUT_MS   120000
+// A trial boot must join Wi-Fi and confirm within this, or it reverts.
+#define OTA_TRIAL_DEADLINE_MS     90000
+#define OTA_WATCHDOG_MS           8000
+// On battery, refuse to install below this VSYS. The Frame reads the battery
+// through a diode, so this is about the ESP32 firmware's 3.6 V at the cell.
+#define OTA_MIN_VSYS_MV           3300

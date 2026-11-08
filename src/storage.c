@@ -21,8 +21,10 @@
 #define SLOTS_PER_SECTOR (FLASH_SECTOR_SIZE / RECORD_SIZE)
 #define SLOTS           (SLOTS_PER_SECTOR * SECTOR_COUNT)
 #define MAGIC           0x494E4B59u   // "INKY"
-#define VERSION         1u
+#define VERSION         2u
 
+// Version 1 (upstream 0.1.0): the same fields without the OTA report. Kept so
+// a frame updating from it keeps its pairing.
 typedef struct {
     uint32_t magic;
     uint32_t version;
@@ -38,6 +40,31 @@ typedef struct {
     uint8_t backoff;
     uint8_t fallback_kind;
     uint8_t reserved;
+    uint32_t crc;
+} record_v1_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t seq;
+    char token[256];
+    char device_id[40];
+    char etag[80];
+    uint32_t event_id;
+    int32_t sleep_s;
+    int32_t button_wake_s;
+    int32_t awake_poll_s;
+    uint8_t always_on;
+    uint8_t backoff;
+    uint8_t fallback_kind;
+    uint8_t reserved;          // bit 0: portal offered this outage
+    // OTA report (ota.c), carried across reboots and the A/B switch.
+    uint8_t ota_phase;
+    uint8_t ota_reason;
+    uint8_t ota_pad[2];
+    char ota_target[24];
+    char ota_attempt[12];
+    char ota_detail[40];
     uint32_t crc;
 } record_t;
 
@@ -60,12 +87,18 @@ static uint32_t crc32(const void *data, size_t len)
 
 static const record_t *slot_ptr(int i)
 {
-    return (const record_t *)(XIP_BASE + SECTOR_OFFSET + (uint32_t)i * RECORD_SIZE);
+    return (const record_t *)(FLASH_READ_BASE + SECTOR_OFFSET + (uint32_t)i * RECORD_SIZE);
 }
 
 static bool slot_valid(const record_t *r)
 {
     return r->magic == MAGIC && r->version == VERSION && r->crc == crc32(r, offsetof(record_t, crc));
+}
+
+static bool slot_valid_v1(const record_t *r)
+{
+    const record_v1_t *o = (const record_v1_t *)r;
+    return o->magic == MAGIC && o->version == 1u && o->crc == crc32(o, offsetof(record_v1_t, crc));
 }
 
 static void defaults(void)
@@ -81,17 +114,26 @@ void storage_begin(void)
 {
     defaults();
     uint32_t best_seq = 0;
+    bool v1 = false;
     for (int i = 0; i < (int)SLOTS; i++) {
         const record_t *r = slot_ptr(i);
-        if (slot_valid(r) && r->seq >= best_seq) { best_seq = r->seq; s_slot = i; }
+        bool cur = slot_valid(r), old = !cur && slot_valid_v1(r);
+        if ((cur || old) && r->seq >= best_seq) { best_seq = r->seq; s_slot = i; v1 = old; }
     }
-    if (s_slot >= 0) {
+    if (s_slot >= 0 && !v1) {
         memcpy(&s_rec, slot_ptr(s_slot), sizeof s_rec);
         LOGI("storage: loaded record seq %lu from slot %d", (unsigned long)s_rec.seq, s_slot);
+        s_dirty = false;
+    } else if (s_slot >= 0) {
+        // Same fields up to `reserved`; the OTA report starts empty.
+        memcpy(&s_rec, slot_ptr(s_slot), offsetof(record_v1_t, crc));
+        s_rec.version = VERSION;
+        LOGI("storage: migrated a version 1 record (seq %lu)", (unsigned long)s_rec.seq);
+        s_dirty = true;   // rewritten as version 2 on the next commit
     } else {
         LOGI("storage: no saved state (first boot)");
+        s_dirty = false;
     }
-    s_dirty = false;
 }
 
 static bool slot_erased(int i)
@@ -200,6 +242,22 @@ void storage_erase(void)
     defaults();
     s_dirty = false;
     LOGW("storage: erased");
+}
+
+void storage_get_ota(uint8_t *phase, uint8_t *reason, const char **target, const char **attempt, const char **detail)
+{
+    *phase = s_rec.ota_phase; *reason = s_rec.ota_reason;
+    *target = s_rec.ota_target; *attempt = s_rec.ota_attempt; *detail = s_rec.ota_detail;
+}
+
+void storage_set_ota(uint8_t phase, uint8_t reason, const char *target, const char *attempt, const char *detail)
+{
+    if (s_rec.ota_phase != phase || s_rec.ota_reason != reason) {
+        s_rec.ota_phase = phase; s_rec.ota_reason = reason; s_dirty = true;
+    }
+    set_str(s_rec.ota_target, sizeof s_rec.ota_target, target);
+    set_str(s_rec.ota_attempt, sizeof s_rec.ota_attempt, attempt);
+    set_str(s_rec.ota_detail, sizeof s_rec.ota_detail, detail);
 }
 
 bool storage_portal_offered(void) { return s_rec.reserved & 1; }

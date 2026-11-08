@@ -74,6 +74,40 @@ No Wi-Fi or server goes into the build: the frame asks for them on first boot
 Flashing replaces whatever was on the Pico, MicroPython included. The SD card
 is not touched.
 
+## Over-the-air updates
+
+A Pico 2 W Frame (`inkyframe2_spectra`) installs signed updates from Tesserae's
+**Settings → Firmware**, the same signed releases the ESP32 firmware and the Pi
+client use. An update is checked against Tesserae's signing key, downloaded,
+checked against the signed size and SHA-256, and written into the flash slot
+the frame is not running from. The frame then reboots into it on trial: it
+keeps the update only once it has joined Wi-Fi, and any failure (no Wi-Fi, a
+crash, a hang) puts it back on the previous version within 90 seconds. On
+battery it refuses to install below about 3.3 V on VSYS. Progress and the
+outcome show on the device in Tesserae.
+
+This needs the RP2350's A/B partition table, written once over USB:
+
+```
+pio run -e inkyframe2_spectra
+tools/install_partitions.sh
+```
+
+The script writes [partitions/pt.json](partitions/pt.json) (two 2036 KB
+slots; the last 16 KB, where Wi-Fi, server and pairing live, stays outside
+both) and loads the firmware into slot A. After that, `pio run -t upload`
+keeps working for development. A frame without the table runs normally but
+does not offer updates. The Pico W (RP2040) builds have no A/B boot ROM and no
+over-the-air updates.
+
+The image a release signs is the `inkyframe2_spectra_ota` build: the same
+firmware marked "try before you buy", which is what lets the boot ROM return
+to the previous version. `tests/host/run.sh` tests the signature and digest
+checks on the host against Tesserae's signed test fixtures, and
+`tools/ota_bench.sh` with the `bench2_spectra*` environments runs a whole
+install, confirm and rollback on a frame with the published test key (bench
+builds only; never ship them).
+
 ## Install the device kind on the server
 
 Tesserae picks the renderer from the device *kind*, and the kind carries the
@@ -220,6 +254,11 @@ src/http.c                HTTP/1.1 client on lwIP raw TCP, with a streaming sink
 src/tesserae.c            discover / register / frame / status / log
 src/frame.c               download into PSRAM, length validation, paint
 src/storage.c             log-structured flash state (pairing, ETag, server config)
+src/ota.c                 signed updates on the RP2350 A/B partitions: install, trial boot, confirm, rollback
+src/ota_verify.c          descriptor signature (Ed25519, Monocypher) and manifest checks
+src/sha256.c              SHA-256 for the image digest
+partitions/pt.json        the A/B partition table
+tests/host/               host tests for the verifier against Tesserae's signed fixtures
 src/settings.c            Wi-Fi, server and pairing code from the setup portal
 src/portal.c              setup access point, DHCP, DNS hijack and the web form
 src/screen.c              status pages and the setup page (with its join QR)

@@ -23,6 +23,7 @@
 #include "epd.h"
 #include "frame.h"
 #include "log.h"
+#include "ota.h"
 #include "portal.h"
 #include "power.h"
 #include "psram.h"
@@ -365,6 +366,30 @@ static void always_on_loop(const char *base)
     }
 }
 
+#ifdef OTA_BENCH_DESCRIPTOR_URL
+// Bench builds only: also take a descriptor from a test web server, so the
+// install, trial boot, confirm and rollback can be exercised without staging
+// on a Tesserae server. Pair with OTA_TRUST_TEST_KEY and the test signing key.
+#include "http.h"
+#include "vendor/cJSON.h"
+static void bench_offer(uint32_t vsys)
+{
+    http_resp_t r;
+    int code = http_request("GET", OTA_BENCH_DESCRIPTOR_URL, NULL, 0, NULL, &r, NULL, NULL, NULL, HTTP_TIMEOUT_STATUS_MS, 0);
+    if (code == 200 && r.body) {
+        cJSON *d = cJSON_ParseWithLength(r.body, r.body_len);
+        const cJSON *p = cJSON_GetObjectItemCaseSensitive(d, "payload");
+        const cJSON *g = cJSON_GetObjectItemCaseSensitive(d, "signature");
+        if (cJSON_IsString(p) && cJSON_IsString(g)) {
+            LOGI("bench: descriptor from " OTA_BENCH_DESCRIPTOR_URL);
+            ota_offer(p->valuestring, g->valuestring, current_kind(), s_on_usb, vsys);
+        }
+        cJSON_Delete(d);
+    }
+    http_resp_free(&r);
+}
+#endif
+
 #ifdef SELFTEST_BASE_URL
 // Bench self-test: no Tesserae involved. Download and paint the synthetic
 // frame from tools/make_test_frames.py.
@@ -387,12 +412,20 @@ static int32_t cycle(int wake_button)
     return selftest();
 #endif
     if (!wifi_connect()) {
+        // An update on trial that cannot join Wi-Fi goes back to the previous
+        // image rather than risk a frame that can never be updated again.
+        if (ota_on_trial()) ota_abandon_trial("Wi-Fi did not connect");
         static char reason[120], detail[96];
         snprintf(detail, sizeof detail, "Could not join '%s'.", settings_ssid());
         snprintf(reason, sizeof reason, "Wi-Fi didn't connect to '%s'. Check the network name and password.", settings_ssid());
         return setup_or_backoff("Wi-Fi unavailable", detail, reason);
     }
     storage_set_portal_offered(false);   // the network is back
+    if (ota_on_trial()) {
+        // The update joined Wi-Fi: keep it. Buying drops the radio briefly.
+        ota_confirm();
+        if (!wifi_connect()) return fail_backoff("Wi-Fi unavailable", "Rejoin after the update failed.");
+    }
     board_led(LED_CONNECTION, 20);
     s_on_usb = wifi_on_usb();
     uint32_t vsys = power_sample_vsys_mv();
@@ -437,6 +470,11 @@ static int32_t cycle(int wake_button)
         if (s.button_wake_s >= 0) storage_set_button_wake_s(s.button_wake_s);
         if (s.always_on >= 0) storage_set_always_on(s.always_on == 1);
         if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
+        // A signed update: on success this installs and reboots into it.
+        if (s.ota_payload) ota_offer(s.ota_payload, s.ota_signature, current_kind(), s_on_usb, vsys);
+#ifdef OTA_BENCH_DESCRIPTOR_URL
+        else bench_offer(vsys);
+#endif
     }
     storage_set_backoff(0);
 
@@ -515,6 +553,7 @@ int main(void)
     LOGI("wake: %s", board_wake_name(wake));
     storage_begin();
     settings_begin();
+    ota_boot();
     pcf_init();
     s_screen = pcf_ram_get() & 0x0F;
     if (s_screen > SCREEN_ERROR) s_screen = SCREEN_UNKNOWN;

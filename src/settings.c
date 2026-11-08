@@ -50,7 +50,7 @@ static uint32_t crc32(const void *data, size_t len)
 
 static const record_t *sector_ptr(int i)
 {
-    return (const record_t *)(XIP_BASE + SECTOR_OFFSET + (uint32_t)i * FLASH_SECTOR_SIZE);
+    return (const record_t *)(FLASH_READ_BASE + SECTOR_OFFSET + (uint32_t)i * FLASH_SECTOR_SIZE);
 }
 
 static bool valid(const record_t *r)

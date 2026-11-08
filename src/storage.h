@@ -44,3 +44,7 @@ void storage_erase(void);
 // it is not offered again until the network comes back.
 bool storage_portal_offered(void);
 void storage_set_portal_offered(bool v);
+
+// The OTA report (ota.c owns the meaning of phase and reason).
+void storage_get_ota(uint8_t *phase, uint8_t *reason, const char **target, const char **attempt, const char **detail);
+void storage_set_ota(uint8_t phase, uint8_t reason, const char *target, const char *attempt, const char *detail);

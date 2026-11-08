@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "ota.h"
 #include "vendor/cJSON.h"
 #include "wifi.h"
 
@@ -40,6 +41,7 @@ static char *identity_json(const tess_identity_t *id)
     cJSON_AddStringToObject(o, "name", DEVICE_NAME);
     cJSON_AddStringToObject(o, "fw_version", FW_VERSION);
     cJSON_AddStringToObject(o, "mac", id->mac);
+    ota_add_capability(o);
     char *s = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return s;
@@ -185,6 +187,7 @@ void tess_post_status(const char *base, const char *device_id, const char *token
     cJSON_AddNumberToObject(o, "panel_w", PANEL_W);
     cJSON_AddNumberToObject(o, "panel_h", PANEL_H);
     if (t->can_stay_awake) cJSON_AddBoolToObject(o, "can_stay_awake", true);
+    ota_add_capability(o);
     if (t->button && t->button[0]) {
         cJSON_AddStringToObject(o, "button", t->button);
         cJSON_AddNumberToObject(o, "button_event_id", t->button_event_id);
@@ -208,6 +211,13 @@ void tess_post_status(const char *base, const char *device_id, const char *token
             out->next_poll_s = json_int(j, "next_poll_s", -1);
             out->wake_at = json_u32(j, "wake_at");
             out->server_time = json_u32(j, "server_time");
+            const cJSON *ota = cJSON_GetObjectItemCaseSensitive(j, "ota");
+            if (cJSON_IsObject(ota)) {
+                static char payload[2048], signature[128];
+                json_str(ota, "payload", payload, sizeof payload);
+                json_str(ota, "signature", signature, sizeof signature);
+                if (payload[0] && signature[0]) { out->ota_payload = payload; out->ota_signature = signature; }
+            }
             const cJSON *cfg = cJSON_GetObjectItemCaseSensitive(j, "config");
             if (cfg) {
                 out->sleep_interval_s = json_int(cfg, "sleep_interval_s", -1);
