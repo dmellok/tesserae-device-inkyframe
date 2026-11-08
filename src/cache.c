@@ -10,6 +10,7 @@
 #include "frame.h"
 #include "frame_collection.h"
 #include "http.h"
+#include "json_num.h"
 #include "log.h"
 #include "psram.h"
 #include "sdcard.h"
@@ -224,12 +225,12 @@ static void save_state(void)
 {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "page", s_page);
-    cJSON_AddNumberToObject(o, "album_deadline", s_album_deadline);
+    json_add_u64(o, "album_deadline", s_album_deadline);
     cJSON *p = cJSON_AddObjectToObject(o, "play");
     cJSON_AddStringToObject(p, "version", s_play.version);
     cJSON_AddNumberToObject(p, "index", s_play.current_index);
-    cJSON_AddNumberToObject(p, "used", s_play.used_mask);
-    cJSON_AddNumberToObject(p, "rng", s_play.rng_state);
+    json_add_u64(p, "used", s_play.used_mask);
+    json_add_u64(p, "rng", s_play.rng_state);
     cJSON_AddBoolToObject(p, "done", s_play.done);
     char *txt = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
@@ -290,19 +291,22 @@ bool cache_enabled(void) { return s_enabled; }
 
 // ---- status ----
 
+
 void cache_add_status(cJSON *body)
 {
     if (!s_enabled) return;
     uint64_t free_b = sdcard_free_bytes();
     if (!free_b) return;
-    // capacity_bytes is a JSON number: keep it within a double's exact range.
-    double cap = (double)(free_b > (1ull << 52) ? (1ull << 52) : free_b);
+    // capacity_bytes is written as raw digits: cJSON prints numbers past
+    // INT_MAX with "%g", which this firmware's printf cannot format, and a
+    // card's free space is usually past 2^31. (Malformed output there made
+    // the whole /status body invalid JSON.)
     cJSON *d = cJSON_AddObjectToObject(body, "deck_cache");
     cJSON_AddNumberToObject(d, "schema", 1);
-    cJSON_AddNumberToObject(d, "capacity_bytes", cap);
+    json_add_u64(d, "capacity_bytes", free_b);
     cJSON *f = cJSON_AddObjectToObject(body, "frame_cache");
     cJSON_AddNumberToObject(f, "schema", 1);
-    cJSON_AddNumberToObject(f, "capacity_bytes", cap);
+    json_add_u64(f, "capacity_bytes", free_b);
     if (s_page_report && s_has_deck) {
         cJSON_AddStringToObject(body, "deck_page_id", s_page);
         cJSON_AddStringToObject(body, "deck_version", s_deck.version);

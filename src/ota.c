@@ -137,7 +137,7 @@ bool ota_confirm(void)
     // explicit_buy rewrites the image's first sector: no flash access may run
     // meanwhile, so the radio (whose IRQ path runs from flash) goes down first.
     wifi_off();
-    static uint8_t workarea[4096];
+    static uint8_t __attribute__((aligned(16))) workarea[4096];
     uint32_t ints = save_and_disable_interrupts();
     int rc = rom_explicit_buy(workarea, sizeof workarea);
     restore_interrupts(ints);
@@ -174,8 +174,9 @@ typedef struct { uint32_t start, size; int index; } slot_t;
 
 static bool target_slot(slot_t *out)
 {
-    static uint8_t workarea[4096];
-    if (rom_load_partition_table(workarea, sizeof workarea, false) != 0) { LOGE("ota: no partition table"); return false; }
+    static uint8_t __attribute__((aligned(16))) workarea[4096];
+    int rc = rom_load_partition_table(workarea, sizeof workarea, false);
+    if (rc != 0) { LOGE("ota: loading the partition table failed (%d)", rc); return false; }
     int other = s_partition == 0 ? rom_get_b_partition(0) : 0;
     if (other < 0) { LOGE("ota: partition %d has no A/B partner (%d)", s_partition, other); return false; }
     uint32_t info[3];

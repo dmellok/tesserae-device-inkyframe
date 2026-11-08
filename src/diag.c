@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "http.h"
+#include "json_num.h"
 #include "log.h"
 #include "rtc.h"
 #include "settings.h"
@@ -42,9 +43,9 @@ uint32_t diag_add_status(cJSON *body)
     storage_get_diag(&id, &at, &code);
     if (!id) return 0;
     cJSON *d = cJSON_AddObjectToObject(body, "diag");
-    cJSON_AddNumberToObject(d, "id", id);
+    json_add_u64(d, "id", id);
     cJSON_AddStringToObject(d, "paint_error", paint_error(code));
-    if (at) cJSON_AddNumberToObject(d, "at", at);
+    if (at) json_add_u64(d, "at", at);
     return id;
 }
 

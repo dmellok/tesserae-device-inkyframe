@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "json_num.h"
 #include "log.h"
 #include "ota.h"
 #include "diag.h"
@@ -193,7 +194,7 @@ char *tess_status_body(const tess_telemetry_t *t, uint32_t *diag_sent)
     if (diag_sent) *diag_sent = sent;
     if (t->button && t->button[0]) {
         cJSON_AddStringToObject(o, "button", t->button);
-        cJSON_AddNumberToObject(o, "button_event_id", t->button_event_id);
+        json_add_u64(o, "button_event_id", t->button_event_id);
         if (t->button_key && t->button_key[0]) cJSON_AddStringToObject(o, "button_key", t->button_key);
     }
     char *body = cJSON_PrintUnformatted(o);
