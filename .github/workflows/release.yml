@@ -1,0 +1,173 @@
+name: release
+
+# On a published GitHub Release: build every frame's USB image, the A/B
+# partition table and the over-the-air image, attach them, and sign the OTA
+# image for pimoroni_inky_frame_73. The descriptor is attached as
+# descriptor-pimoroni_inky_frame_73.json, which is what api.tesserae.ink's
+# firmware feed looks for; a Tesserae server then offers the update to its
+# Pico 2 W Spectra Frames (Settings > Firmware).
+#
+# Only the Pico 2 W Spectra build is signed: the Pico W (RP2040) builds have
+# no A/B boot ROM and never advertise OTA, so an offer to one is inert.
+#
+# SECURITY: OTA_SIGN_TOKEN authorises signing arbitrary bytes with the
+# production key. It lives only in the protected `ota-signing` environment
+# (required reviewers), not in repo secrets, so the sign job waits for
+# approval. No pull_request trigger, so fork PRs never reach it.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and sign (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      fw_version: ${{ steps.ver.outputs.fw_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          v='${{ github.event.release.tag_name || inputs.tag }}'
+          fw="${v#v}"
+          src=$(sed -n 's/#define FW_VERSION "\(.*\)"/\1/p' include/version.h)
+          if [ "$src" != "$fw" ]; then
+            echo "tag $v does not match FW_VERSION $src (include/version.h)" >&2
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "fw_version=$fw" >> "$GITHUB_OUTPUT"
+
+      - name: Test and build
+        run: |
+          set -euo pipefail
+          pip install platformio
+          tests/host/run.sh
+          for env in inkyframe inkyframe_spectra inkyframe2_spectra inkyframe2_spectra_ota; do
+            pio run -e "$env"
+          done
+          fw='${{ steps.ver.outputs.fw_version }}'
+          python3 tools/check_image.py .pio/build/inkyframe2_spectra/firmware.bin "$fw" --no-tbyb
+          python3 tools/check_image.py .pio/build/inkyframe2_spectra_ota/firmware.bin "$fw" --tbyb
+          for env in inkyframe inkyframe_spectra inkyframe2_spectra inkyframe2_spectra_ota; do
+            ! grep -q "test-ed25519-1" ".pio/build/$env/firmware.bin"
+          done
+          PICOTOOL=$(ls -d ~/.platformio/packages/tool-picotool-rp2040-earlephilhower*/picotool | head -1)
+          "$PICOTOOL" partition create partitions/pt.json partitions/pt.uf2
+
+          mkdir -p dist
+          cp .pio/build/inkyframe/firmware.uf2              "dist/inkyframe-acep-picow-$fw.uf2"
+          cp .pio/build/inkyframe_spectra/firmware.uf2      "dist/inkyframe-spectra-picow-$fw.uf2"
+          cp .pio/build/inkyframe2_spectra/firmware.uf2     "dist/inkyframe-spectra-pico2w-$fw.uf2"
+          cp .pio/build/inkyframe2_spectra_ota/firmware.bin "dist/inkyframe-spectra-pico2w-ota-$fw.bin"
+          cp partitions/pt.uf2                              "dist/inkyframe-pico2w-partition-table.uf2"
+          sha256sum dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: dist/*
+          if-no-files-found: error
+
+  attach-images:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: dist
+      - name: Attach the images to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag='${{ needs.build.outputs.version }}'
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            echo "no GitHub release for $tag; the images are the 'images' artifact"
+          fi
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ota-signing
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: dist
+
+      - name: Sign the OTA image
+        env:
+          OTA_SIGN_TOKEN: ${{ secrets.OTA_SIGN_TOKEN }}
+          OTA_SIGN_URL: ${{ vars.OTA_SIGN_URL || 'https://tesserae-ota-signer.dmellok.workers.dev' }}
+        run: |
+          set -euo pipefail
+          fw='${{ needs.build.outputs.fw_version }}'
+          img="dist/inkyframe-spectra-pico2w-ota-$fw.bin"
+          kind=pimoroni_inky_frame_73
+          test -f "$img"
+          if [ -z "${OTA_SIGN_TOKEN:-}" ]; then
+            echo "OTA_SIGN_TOKEN is not set in the ota-signing environment" >&2
+            exit 1
+          fi
+          mkdir -p descriptors
+          echo "signing $kind @ $fw ($(stat -c%s "$img") bytes)"
+          code=$(curl -sS -o resp.json -w '%{http_code}' \
+            -X POST "$OTA_SIGN_URL/sign?device_kind=$kind&fw_version=$fw" \
+            -H "Authorization: Bearer $OTA_SIGN_TOKEN" \
+            --data-binary "@$img")
+          if [ "$code" != "200" ]; then
+            echo "signer returned HTTP $code:" >&2; cat resp.json >&2; exit 1
+          fi
+          jq -e '(has("error") | not) and .descriptor.payload and .descriptor.signature' resp.json > /dev/null
+          [ "$(jq -r '.manifest.fw_version' resp.json)" = "$fw" ]
+          [ "$(jq -r '.manifest.device_kind' resp.json)" = "$kind" ]
+          [ "$(jq -r '.manifest.sha256' resp.json)" = "$(sha256sum "$img" | awk '{print $1}')" ]
+          url=$(jq -r '.image_url // empty' resp.json)
+          # The frame has no TLS and fetches the image over plain HTTP.
+          plain="http://${url#https://}"
+          curl -sf -r 0-0 -o /dev/null "$plain" || { echo "image not fetchable over HTTP: $plain" >&2; exit 1; }
+          jq '.descriptor' resp.json > "descriptors/descriptor-$kind.json"
+          echo "signed $kind (image: $url)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ota-descriptors
+          path: descriptors/
+          if-no-files-found: error
+
+      - name: Attach the descriptor to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag='${{ needs.build.outputs.version }}'
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" descriptors/descriptor-*.json --clobber
+          else
+            echo "no GitHub release for $tag; the descriptor is the ota-descriptors artifact"
+          fi

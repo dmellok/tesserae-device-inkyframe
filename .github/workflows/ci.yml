@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Host tests (OTA verifier, SHA-256)
+        run: tests/host/run.sh
+      - name: Build every frame
+        run: |
+          set -euo pipefail
+          for env in inkyframe inkyframe_spectra inkyframe2_spectra inkyframe2_spectra_ota bench2_spectra; do
+            pio run -e "$env"
+          done
+      - name: Check the images
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/#define FW_VERSION "\(.*\)"/\1/p' include/version.h)
+          python3 tools/check_image.py .pio/build/inkyframe2_spectra/firmware.bin "$v" --no-tbyb
+          python3 tools/check_image.py .pio/build/inkyframe2_spectra_ota/firmware.bin "$v" --tbyb
+          # Only bench builds may trust the published test key.
+          for env in inkyframe inkyframe_spectra inkyframe2_spectra inkyframe2_spectra_ota; do
+            if grep -q "test-ed25519-1" ".pio/build/$env/firmware.bin"; then
+              echo "$env trusts the TEST signing key" >&2; exit 1
+            fi
+          done
+          grep -q "test-ed25519-1" .pio/build/bench2_spectra/firmware.bin
