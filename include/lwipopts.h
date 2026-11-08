@@ -9,7 +9,7 @@
 #define LWIP_NETCONN                0
 #define MEM_LIBC_MALLOC             0
 #define MEM_ALIGNMENT               4
-#define MEM_SIZE                    16000
+#define MEM_SIZE                    32000
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
 #define PBUF_POOL_SIZE              24
@@ -43,5 +43,12 @@
 #define MEMP_NUM_UDP_PCB            6
 #define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 4)
 #define LWIP_DEBUG                  0
+
+// TLS (HTTPS to the cloud relay and update hosts) through lwIP's altcp layer
+// on Mbed TLS. Plain-HTTP connections go through the same API untouched.
+#define LWIP_ALTCP                  1
+#define LWIP_ALTCP_TLS              1
+#define LWIP_ALTCP_TLS_MBEDTLS      1
+#define ALTCP_MBEDTLS_AUTHMODE      MBEDTLS_SSL_VERIFY_REQUIRED
 
 #endif

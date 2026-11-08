@@ -111,6 +111,26 @@ checks on the host against Tesserae's signed test fixtures, and
 install, confirm and rollback on a frame with the published test key (bench
 builds only; never ship them).
 
+## Logs and failure reports
+
+The frame keeps its recent log in a 24 KB RAM ring. Collect logs from the
+device page in Tesserae (Troubleshooting) and the frame uploads the ring on its
+next check-in, under a `# tesserae-log v1` header (firmware, wake reason, reset
+cause), with its token and Wi-Fi password blanked. A paint that fails is
+reported on the next check-in and re-sent until the server has it; it is kept in
+flash, so a frame on battery still reports it after powering off. On battery
+each wake is a fresh boot, so the ring holds that wake's log.
+
+## HTTPS
+
+Requests to `https://` URLs (update images, the cloud relay) use TLS 1.2
+through Mbed TLS 3.6 (the Pico SDK's copy) on lwIP's altcp layer, checked
+against the root CAs in [include/ca_roots.pem](include/ca_roots.pem): Google
+Trust Services, GlobalSign, ISRG (Let's Encrypt) and SSL.com, which cover
+Cloudflare and api.tesserae.ink. Certificate validity dates are not checked,
+as the frame has no trusted clock before it first reaches a server. A Tesserae
+server on the LAN is plain HTTP as before.
+
 ## Install the device kind on the server
 
 Tesserae picks the renderer from the device *kind*, and the kind carries the

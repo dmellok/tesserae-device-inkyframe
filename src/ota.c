@@ -25,7 +25,7 @@ static const char *const REASONS[] = {
 #define N_PHASES  (sizeof PHASES / sizeof PHASES[0])
 #define N_REASONS (sizeof REASONS / sizeof REASONS[0])
 
-static void report(uint8_t phase, uint8_t reason, const char *target, const char *attempt, const char *detail)
+static __attribute__((unused)) void report(uint8_t phase, uint8_t reason, const char *target, const char *attempt, const char *detail)
 {
     LOGI("ota: %s (%s) target %s%s%s", PHASES[phase], REASONS[reason], target && target[0] ? target : "-",
          detail && detail[0] ? ": " : "", detail ? detail : "");
@@ -288,13 +288,10 @@ void ota_offer(const char *payload, const char *signature, const char *kind, boo
 
     LOGI("ota: installing %s (%lu bytes) into partition %c", m.fw_version, (unsigned long)m.size_bytes, slot.index == 0 ? 'A' : 'B');
     report(PH_DOWNLOADING, R_OK, m.fw_version, attempt, "");
-    // This firmware has no TLS, so an https:// image is fetched over plain
-    // HTTP (the signer's host serves both). That costs no integrity: the image
-    // must match the signed size and SHA-256 before a byte reaches flash.
-    static char url[340], plain[340];
-    if (strncmp(m.image_url, "https://", 8) == 0) snprintf(plain, sizeof plain, "http://%s", m.image_url + 8);
-    else snprintf(plain, sizeof plain, "%s", m.image_url);
-    wifi_rewrite_host(plain, url, sizeof url);
+    // Fetched as signed (https:// over TLS). Either way the image must match
+    // the signed size and SHA-256 before a byte reaches flash.
+    static char url[340];
+    wifi_rewrite_host(m.image_url, url, sizeof url);
     static dl_t dl;
     memset(&dl, 0, sizeof dl);
     dl.want = m.size_bytes;

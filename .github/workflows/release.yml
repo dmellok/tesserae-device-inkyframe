@@ -148,9 +148,7 @@ jobs:
           [ "$(jq -r '.manifest.device_kind' resp.json)" = "$kind" ]
           [ "$(jq -r '.manifest.sha256' resp.json)" = "$(sha256sum "$img" | awk '{print $1}')" ]
           url=$(jq -r '.image_url // empty' resp.json)
-          # The frame has no TLS and fetches the image over plain HTTP.
-          plain="http://${url#https://}"
-          curl -sf -r 0-0 -o /dev/null "$plain" || { echo "image not fetchable over HTTP: $plain" >&2; exit 1; }
+          curl -sf -r 0-0 -o /dev/null "$url" || { echo "image not fetchable: $url" >&2; exit 1; }
           jq '.descriptor' resp.json > "descriptors/descriptor-$kind.json"
           echo "signed $kind (image: $url)"
 

@@ -7,6 +7,7 @@
 #include "config.h"
 #include "log.h"
 #include "ota.h"
+#include "diag.h"
 #include "vendor/cJSON.h"
 #include "wifi.h"
 
@@ -188,6 +189,7 @@ void tess_post_status(const char *base, const char *device_id, const char *token
     cJSON_AddNumberToObject(o, "panel_h", PANEL_H);
     if (t->can_stay_awake) cJSON_AddBoolToObject(o, "can_stay_awake", true);
     ota_add_capability(o);
+    uint32_t diag_sent = diag_add_status(o);
     if (t->button && t->button[0]) {
         cJSON_AddStringToObject(o, "button", t->button);
         cJSON_AddNumberToObject(o, "button_event_id", t->button_event_id);
@@ -204,6 +206,7 @@ void tess_post_status(const char *base, const char *device_id, const char *token
     http_request("POST", url, hdrs, 1, body, &r, NULL, NULL, NULL, HTTP_TIMEOUT_STATUS_MS, 0);
     free(body);
     out->code = r.status;
+    out->diag_sent = diag_sent;
     if (r.status == 200 && r.body) {
         cJSON *j = cJSON_ParseWithLength(r.body, r.body_len);
         if (!j) LOGW("status: bad JSON%s", r.truncated ? " (truncated)" : "");
@@ -211,6 +214,8 @@ void tess_post_status(const char *base, const char *device_id, const char *token
             out->next_poll_s = json_int(j, "next_poll_s", -1);
             out->wake_at = json_u32(j, "wake_at");
             out->server_time = json_u32(j, "server_time");
+            const cJSON *logs = cJSON_GetObjectItemCaseSensitive(j, "logs");
+            out->logs_upload = cJSON_IsObject(logs) && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(logs, "upload"));
             const cJSON *ota = cJSON_GetObjectItemCaseSensitive(j, "ota");
             if (cJSON_IsObject(ota)) {
                 static char payload[2048], signature[128];

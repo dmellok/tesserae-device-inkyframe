@@ -58,6 +58,8 @@ typedef struct {
     // into storage owned by tesserae.c, valid until the next status call.
     const char *ota_payload;
     const char *ota_signature;
+    uint32_t diag_sent;       // the diag id this beat carried, 0 if none
+    bool logs_upload;         // the server asked for the log ring
     int32_t awake_poll_s;     // -1 if absent
 } tess_status_t;
 

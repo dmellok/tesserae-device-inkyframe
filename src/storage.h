@@ -48,3 +48,7 @@ void storage_set_portal_offered(bool v);
 // The OTA report (ota.c owns the meaning of phase and reason).
 void storage_get_ota(uint8_t *phase, uint8_t *reason, const char **target, const char **attempt, const char **detail);
 void storage_set_ota(uint8_t phase, uint8_t reason, const char *target, const char *attempt, const char *detail);
+
+// The last paint failure (diag.c owns the codes); id 0 = none.
+void storage_get_diag(uint32_t *id, uint32_t *at, uint8_t *code);
+void storage_set_diag(uint32_t id, uint32_t at, uint8_t code);

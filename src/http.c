@@ -7,8 +7,11 @@
 #include <ctype.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
-#include "lwip/tcp.h"
+#include "lwip/altcp.h"
+#include "lwip/altcp_tcp.h"
+#include "lwip/altcp_tls.h"
 #include "lwip/pbuf.h"
+#include "mbedtls/ssl.h"
 
 #include "config.h"
 #include "log.h"
@@ -21,7 +24,7 @@ typedef enum { ST_HEADERS, ST_BODY, ST_DONE } state_t;
 typedef enum { CH_SIZE, CH_DATA, CH_CRLF, CH_TRAILER } chunk_state_t;
 
 static struct {
-    struct tcp_pcb *pcb;
+    struct altcp_pcb *pcb;
     volatile bool pcb_dead, done, err;
     volatile state_t state;
     char hdr[HDR_MAX + 1];
@@ -49,6 +52,12 @@ static struct {
 } s;
 
 static volatile bool s_busy;
+
+// The TLS client configuration (trusted roots), built on the first https://
+// request and kept: parsing the bundle costs a few hundred milliseconds.
+extern const char CA_ROOTS_PEM[];
+extern const size_t CA_ROOTS_PEM_LEN;
+static struct altcp_tls_config *s_tls_config;
 
 // ---- helpers ----
 
@@ -245,37 +254,37 @@ static void feed(const uint8_t *d, size_t n)
     if (s.state == ST_BODY) feed_body(d, n);
 }
 
-// ---- raw TCP callbacks (under the lwIP lock) ----
+// ---- altcp callbacks (under the lwIP lock); plain TCP or TLS alike ----
 
-static void try_send(struct tcp_pcb *pcb)
+static void try_send(struct altcp_pcb *pcb)
 {
     while (s.req_sent < s.req_len) {
-        u16_t avail = tcp_sndbuf(pcb);
+        u16_t avail = altcp_sndbuf(pcb);
         if (!avail) return;
         size_t rem = s.req_len - s.req_sent;
         u16_t n = rem < avail ? (u16_t)rem : avail;
-        if (tcp_write(pcb, s.req + s.req_sent, n, TCP_WRITE_FLAG_COPY | (s.req_body ? TCP_WRITE_FLAG_MORE : 0)) != ERR_OK) return;
+        if (altcp_write(pcb, s.req + s.req_sent, n, TCP_WRITE_FLAG_COPY | (s.req_body ? TCP_WRITE_FLAG_MORE : 0)) != ERR_OK) return;
         s.req_sent += n;
     }
     while (s.req_body && s.req_body_sent < s.req_body_len) {
-        u16_t avail = tcp_sndbuf(pcb);
+        u16_t avail = altcp_sndbuf(pcb);
         if (!avail) return;
         size_t rem = s.req_body_len - s.req_body_sent;
         u16_t n = rem < avail ? (u16_t)rem : avail;
-        if (tcp_write(pcb, s.req_body + s.req_body_sent, n, TCP_WRITE_FLAG_COPY) != ERR_OK) return;
+        if (altcp_write(pcb, s.req_body + s.req_body_sent, n, TCP_WRITE_FLAG_COPY) != ERR_OK) return;
         s.req_body_sent += n;
     }
-    tcp_output(pcb);
+    altcp_output(pcb);
 }
 
-static err_t sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len)
+static err_t sent_cb(void *arg, struct altcp_pcb *pcb, u16_t len)
 {
     (void)arg; (void)len;
     try_send(pcb);
     return ERR_OK;
 }
 
-static err_t recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
+static err_t recv_cb(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     (void)arg;
     if (!p) {   // remote closed
@@ -289,7 +298,7 @@ static err_t recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     if (err == ERR_OK) {
         for (struct pbuf *q = p; q; q = q->next)
             if (s.state != ST_DONE) feed((const uint8_t *)q->payload, q->len);
-        tcp_recved(pcb, p->tot_len);
+        altcp_recved(pcb, p->tot_len);
     }
     pbuf_free(p);
     return ERR_OK;
@@ -302,7 +311,7 @@ static void err_cb(void *arg, err_t err)
     if (s.state != ST_DONE) { s.err = true; finish(); }
 }
 
-static err_t connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
+static err_t connected_cb(void *arg, struct altcp_pcb *pcb, err_t err)
 {
     (void)arg;
     if (err != ERR_OK) { s.err = true; finish(); return ERR_OK; }
@@ -312,12 +321,11 @@ static err_t connected_cb(void *arg, struct tcp_pcb *pcb, err_t err)
 
 // ---- request ----
 
-static bool split(const char *url, char *host, size_t hcap, uint16_t *port, const char **path)
+static bool split(const char *url, char *host, size_t hcap, uint16_t *port, const char **path, bool *tls)
 {
     const char *p = strstr(url, "://");
-    // Plain HTTP only: there is no TLS in this build, and silently connecting
-    // to port 80 for an https:// URL would fail in a confusing way.
-    if (p && !(p - url == 4 && strncasecmp(url, "http", 4) == 0)) return false;
+    *tls = p && p - url == 5 && strncasecmp(url, "https", 5) == 0;
+    if (p && !*tls && !(p - url == 4 && strncasecmp(url, "http", 4) == 0)) return false;
     p = p ? p + 3 : url;
     const char *slash = strchr(p, '/');
     size_t hp_len = slash ? (size_t)(slash - p) : strlen(p);
@@ -325,7 +333,7 @@ static bool split(const char *url, char *host, size_t hcap, uint16_t *port, cons
     size_t hl = colon ? (size_t)(colon - p) : hp_len;
     if (hl == 0 || hl >= hcap) return false;
     memcpy(host, p, hl); host[hl] = 0;
-    *port = 80;
+    *port = *tls ? 443 : 80;
     if (colon) { int v = atoi(colon + 1); if (v > 0 && v < 65536) *port = (uint16_t)v; }
     *path = slash ? slash : "/";
     return true;
@@ -340,21 +348,28 @@ int http_request(const char *method, const char *url,
     if (s_busy) return resp->status = HTTP_ERR_BUSY;
     s_busy = true;
 
-    char host[96]; uint16_t port; const char *path;
-    if (!split(url, host, sizeof host, &port, &path)) { s_busy = false; return resp->status = HTTP_ERR_URL; }
+    char host[96]; uint16_t port; const char *path; bool tls;
+    if (!split(url, host, sizeof host, &port, &path, &tls)) { s_busy = false; return resp->status = HTTP_ERR_URL; }
 
     memset(&s, 0, sizeof s);
     s.resp = resp; s.on_length = on_length; s.sink = sink; s.arg = arg;
     s.state = ST_HEADERS;
 
     size_t blen = body ? strlen(body) : 0;
+    char hostport[104];
+    if (port == (tls ? 443 : 80)) snprintf(hostport, sizeof hostport, "%s", host);
+    else snprintf(hostport, sizeof hostport, "%s:%u", host, port);
     int n = snprintf(s.req, sizeof s.req,
-                     "%s %s HTTP/1.1\r\nHost: %s:%u\r\nConnection: close\r\nUser-Agent: tesserae-inkyframe/%s\r\nAccept: application/json\r\n",
-                     method, path, host, port, FW_VERSION);
+                     "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\nUser-Agent: tesserae-inkyframe/%s\r\nAccept: application/json\r\n",
+                     method, path, hostport, FW_VERSION);
     for (int i = 0; i < nheaders && n > 0 && n < (int)sizeof s.req; i++)
         n += snprintf(s.req + n, sizeof s.req - n, "%s\r\n", headers[i]);
+    // JSON unless the caller named its own Content-Type (the log upload).
+    bool own_type = false;
+    for (int i = 0; i < nheaders; i++) if (strncasecmp(headers[i], "Content-Type:", 13) == 0) own_type = true;
     if (body && n > 0 && n < (int)sizeof s.req)
-        n += snprintf(s.req + n, sizeof s.req - n, "Content-Type: application/json\r\nContent-Length: %u\r\n", (unsigned)blen);
+        n += snprintf(s.req + n, sizeof s.req - n, "%sContent-Length: %u\r\n",
+                      own_type ? "" : "Content-Type: application/json\r\n", (unsigned)blen);
     if (n > 0 && n < (int)sizeof s.req) n += snprintf(s.req + n, sizeof s.req - n, "\r\n");
     if (n <= 0 || n >= (int)sizeof s.req) { s_busy = false; LOGE("http: request too large"); return resp->status = HTTP_ERR_URL; }
     s.req_len = (size_t)n;
@@ -365,12 +380,21 @@ int http_request(const char *method, const char *url,
     if (!wifi_resolve(host, &ip, 5000)) { s_busy = false; LOGE("http: cannot resolve %s", host); return resp->status = HTTP_ERR_DNS; }
 
     cyw43_arch_lwip_begin();
-    s.pcb = tcp_new_ip_type(IP_GET_TYPE(&ip));
+    if (tls && !s_tls_config) {
+        s_tls_config = altcp_tls_create_config_client((const u8_t *)CA_ROOTS_PEM, CA_ROOTS_PEM_LEN);
+        if (!s_tls_config) LOGE("http: TLS configuration failed");
+    }
+    if (!tls) s.pcb = altcp_new_ip_type(NULL, IP_GET_TYPE(&ip));
+    else if (s_tls_config) {
+        s.pcb = altcp_tls_new(s_tls_config, IP_GET_TYPE(&ip));
+        // SNI, and the name the certificate is checked against.
+        if (s.pcb && mbedtls_ssl_set_hostname(altcp_tls_context(s.pcb), host) != 0) { altcp_abort(s.pcb); s.pcb = NULL; }
+    }
     if (s.pcb) {
-        tcp_err(s.pcb, err_cb);
-        tcp_recv(s.pcb, recv_cb);
-        tcp_sent(s.pcb, sent_cb);
-        if (tcp_connect(s.pcb, &ip, port, connected_cb) != ERR_OK) { tcp_abort(s.pcb); s.pcb = NULL; s.pcb_dead = true; }
+        altcp_err(s.pcb, err_cb);
+        altcp_recv(s.pcb, recv_cb);
+        altcp_sent(s.pcb, sent_cb);
+        if (altcp_connect(s.pcb, &ip, port, connected_cb) != ERR_OK) { altcp_abort(s.pcb); s.pcb = NULL; s.pcb_dead = true; }
     }
     cyw43_arch_lwip_end();
     if (!s.pcb) { s_busy = false; LOGE("http: connect failed"); return resp->status = HTTP_ERR_CONNECT; }
@@ -388,8 +412,8 @@ int http_request(const char *method, const char *url,
 
     cyw43_arch_lwip_begin();
     if (s.pcb && !s.pcb_dead) {
-        tcp_recv(s.pcb, NULL); tcp_sent(s.pcb, NULL); tcp_err(s.pcb, NULL);
-        if (tcp_close(s.pcb) != ERR_OK) tcp_abort(s.pcb);
+        altcp_recv(s.pcb, NULL); altcp_sent(s.pcb, NULL); altcp_err(s.pcb, NULL);
+        if (altcp_close(s.pcb) != ERR_OK) altcp_abort(s.pcb);
         s.pcb = NULL;
     }
     cyw43_arch_lwip_end();

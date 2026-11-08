@@ -21,27 +21,7 @@
 #define SLOTS_PER_SECTOR (FLASH_SECTOR_SIZE / RECORD_SIZE)
 #define SLOTS           (SLOTS_PER_SECTOR * SECTOR_COUNT)
 #define MAGIC           0x494E4B59u   // "INKY"
-#define VERSION         2u
-
-// Version 1 (upstream 0.1.0): the same fields without the OTA report. Kept so
-// a frame updating from it keeps its pairing.
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t seq;
-    char token[256];
-    char device_id[40];
-    char etag[80];
-    uint32_t event_id;
-    int32_t sleep_s;
-    int32_t button_wake_s;
-    int32_t awake_poll_s;
-    uint8_t always_on;
-    uint8_t backoff;
-    uint8_t fallback_kind;
-    uint8_t reserved;
-    uint32_t crc;
-} record_v1_t;
+#define VERSION         3u
 
 typedef struct {
     uint32_t magic;
@@ -65,8 +45,18 @@ typedef struct {
     char ota_target[24];
     char ota_attempt[12];
     char ota_detail[40];
+    // Version 3: the last paint failure, re-sent on /status until accepted.
+    uint32_t diag_id;          // 0 = none
+    uint32_t diag_at;
+    uint8_t diag_code;
+    uint8_t diag_pad[3];
     uint32_t crc;
 } record_t;
+
+// Each version only appended fields before the CRC, so an older record is the
+// current one cut short: its CRC sits where the newer fields begin.
+#define CRC_OFFSET_V1 offsetof(record_t, ota_phase)
+#define CRC_OFFSET_V2 offsetof(record_t, diag_id)
 
 _Static_assert(sizeof(record_t) <= RECORD_SIZE, "record too large");
 
@@ -95,10 +85,16 @@ static bool slot_valid(const record_t *r)
     return r->magic == MAGIC && r->version == VERSION && r->crc == crc32(r, offsetof(record_t, crc));
 }
 
-static bool slot_valid_v1(const record_t *r)
+// An older record (version 1 or 2) still valid under its own layout; returns
+// the length of its fields, or 0.
+static size_t slot_old_len(const record_t *r)
 {
-    const record_v1_t *o = (const record_v1_t *)r;
-    return o->magic == MAGIC && o->version == 1u && o->crc == crc32(o, offsetof(record_v1_t, crc));
+    if (r->magic != MAGIC) return 0;
+    size_t off = r->version == 1u ? CRC_OFFSET_V1 : r->version == 2u ? CRC_OFFSET_V2 : 0;
+    if (!off) return 0;
+    uint32_t stored;
+    memcpy(&stored, (const uint8_t *)r + off, sizeof stored);
+    return stored == crc32(r, off) ? off : 0;
 }
 
 static void defaults(void)
@@ -114,22 +110,23 @@ void storage_begin(void)
 {
     defaults();
     uint32_t best_seq = 0;
-    bool v1 = false;
+    size_t old_len = 0;
     for (int i = 0; i < (int)SLOTS; i++) {
         const record_t *r = slot_ptr(i);
-        bool cur = slot_valid(r), old = !cur && slot_valid_v1(r);
-        if ((cur || old) && r->seq >= best_seq) { best_seq = r->seq; s_slot = i; v1 = old; }
+        size_t ol = slot_valid(r) ? 0 : slot_old_len(r);
+        if ((slot_valid(r) || ol) && r->seq >= best_seq) { best_seq = r->seq; s_slot = i; old_len = ol; }
     }
-    if (s_slot >= 0 && !v1) {
+    if (s_slot >= 0 && !old_len) {
         memcpy(&s_rec, slot_ptr(s_slot), sizeof s_rec);
         LOGI("storage: loaded record seq %lu from slot %d", (unsigned long)s_rec.seq, s_slot);
         s_dirty = false;
     } else if (s_slot >= 0) {
-        // Same fields up to `reserved`; the OTA report starts empty.
-        memcpy(&s_rec, slot_ptr(s_slot), offsetof(record_v1_t, crc));
+        // The older fields carry over; the ones added since start empty.
+        uint32_t was = slot_ptr(s_slot)->version;
+        memcpy(&s_rec, slot_ptr(s_slot), old_len);
         s_rec.version = VERSION;
-        LOGI("storage: migrated a version 1 record (seq %lu)", (unsigned long)s_rec.seq);
-        s_dirty = true;   // rewritten as version 2 on the next commit
+        LOGI("storage: migrated a version %lu record (seq %lu)", (unsigned long)was, (unsigned long)s_rec.seq);
+        s_dirty = true;   // rewritten in the current layout on the next commit
     } else {
         LOGI("storage: no saved state (first boot)");
         s_dirty = false;
@@ -258,6 +255,18 @@ void storage_set_ota(uint8_t phase, uint8_t reason, const char *target, const ch
     set_str(s_rec.ota_target, sizeof s_rec.ota_target, target);
     set_str(s_rec.ota_attempt, sizeof s_rec.ota_attempt, attempt);
     set_str(s_rec.ota_detail, sizeof s_rec.ota_detail, detail);
+}
+
+void storage_get_diag(uint32_t *id, uint32_t *at, uint8_t *code)
+{
+    *id = s_rec.diag_id; *at = s_rec.diag_at; *code = s_rec.diag_code;
+}
+
+void storage_set_diag(uint32_t id, uint32_t at, uint8_t code)
+{
+    if (s_rec.diag_id != id || s_rec.diag_at != at || s_rec.diag_code != code) {
+        s_rec.diag_id = id; s_rec.diag_at = at; s_rec.diag_code = code; s_dirty = true;
+    }
 }
 
 bool storage_portal_offered(void) { return s_rec.reserved & 1; }

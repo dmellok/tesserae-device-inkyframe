@@ -20,8 +20,10 @@
 
 #include "board.h"
 #include "config.h"
+#include "diag.h"
 #include "epd.h"
 #include "frame.h"
+#include "http.h"
 #include "log.h"
 #include "ota.h"
 #include "portal.h"
@@ -39,7 +41,7 @@
 enum { SCREEN_UNKNOWN = 0, SCREEN_FRAME, SCREEN_PAIRING, SCREEN_NO_DASHBOARD, SCREEN_ERROR };
 
 static const int32_t BACKOFF_S[] = BACKOFF_STEPS_S;
-#define BACKOFF_N (sizeof BACKOFF_S / sizeof BACKOFF_S[0])
+#define BACKOFF_N ((int)(sizeof BACKOFF_S / sizeof BACKOFF_S[0]))
 static const char *const BUTTON_NAMES[5] = { BUTTON_A_NAME, BUTTON_B_NAME, BUTTON_C_NAME, BUTTON_D_NAME, BUTTON_E_NAME };
 static const char *const BUTTON_KEYS[5] = { "a", "b", "c", "d", "e" };
 
@@ -271,6 +273,7 @@ static void paint_downloaded(const char *etag)
         set_screen(SCREEN_FRAME);
     } else {
         LOGE("frame: paint failed; ETag not committed");
+        diag_paint_failed(DIAG_PAINT_TIMEOUT);
     }
     board_led(LED_ACTIVITY, 20);
 }
@@ -355,6 +358,8 @@ static void always_on_loop(const char *base)
             tess_post_status(base, storage_device_id(), storage_token(), &t, &s);
             if (s.code == 200) {
                 set_clock(s.server_time);
+                diag_acknowledge(s.diag_sent);
+                if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
                 if (s.always_on == 0) { LOGI("always-on: turned off by config"); storage_set_always_on(false); return; }
                 if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
                 next_poll = (s.next_poll_s > 0 && s.next_poll_s < 300) ? s.next_poll_s : storage_awake_poll_s();
@@ -421,6 +426,25 @@ static int32_t cycle(int wake_button)
         return setup_or_backoff("Wi-Fi unavailable", detail, reason);
     }
     storage_set_portal_offered(false);   // the network is back
+#ifdef TLS_SELFTEST
+    {
+        // Bench: prove the TLS client against both CA families once per boot.
+        {
+            static const char *const urls[] = {
+                "https://tesserae-ota-signer.dmellok.workers.dev/",   // Google Trust Services
+                "https://api.tesserae.ink/version/latest",            // Let's Encrypt
+                "https://self-signed.badssl.com/",                     // must fail: self-signed
+                "https://wrong.host.badssl.com/",                      // must fail: name mismatch
+            };
+            for (int i = 0; i < 4; i++) {
+                http_resp_t r;
+                int code = http_request("GET", urls[i], NULL, 0, NULL, &r, NULL, NULL, NULL, 20000, 0);
+                LOGI("tls selftest: %s -> %d (%u bytes)", urls[i], code, (unsigned)r.body_len);
+                http_resp_free(&r);
+            }
+        }
+    }
+#endif
     if (ota_on_trial()) {
         // The update joined Wi-Fi: keep it. Buying drops the radio briefly.
         ota_confirm();
@@ -470,6 +494,8 @@ static int32_t cycle(int wake_button)
         if (s.button_wake_s >= 0) storage_set_button_wake_s(s.button_wake_s);
         if (s.always_on >= 0) storage_set_always_on(s.always_on == 1);
         if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
+        diag_acknowledge(s.diag_sent);
+        if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
         // A signed update: on success this installs and reboots into it.
         if (s.ota_payload) ota_offer(s.ota_payload, s.ota_signature, current_kind(), s_on_usb, vsys);
 #ifdef OTA_BENCH_DESCRIPTOR_URL
@@ -555,6 +581,7 @@ int main(void)
     settings_begin();
     ota_boot();
     pcf_init();
+    diag_begin(board_wake_name(wake));
     s_screen = pcf_ram_get() & 0x0F;
     if (s_screen > SCREEN_ERROR) s_screen = SCREEN_UNKNOWN;
     epd_init();

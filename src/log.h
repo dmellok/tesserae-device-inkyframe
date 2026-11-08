@@ -1,12 +1,20 @@
-// USB-serial logging with a millisecond timestamp.
+// Logging: every line goes to USB serial with a millisecond timestamp, and
+// into a RAM ring the server can ask for (Tesserae's device log protocol v1,
+// see diag.h).
 #pragma once
 
+#include <stddef.h>
 #include <stdio.h>
 #include "pico/time.h"
 
-#define LOG_LINE(level, fmt, ...) \
-    printf("[%6lu] " level " " fmt "\n", (unsigned long)to_ms_since_boot(get_absolute_time()), ##__VA_ARGS__)
+void log_emit(char level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-#define LOGI(fmt, ...) LOG_LINE("I", fmt, ##__VA_ARGS__)
-#define LOGW(fmt, ...) LOG_LINE("W", fmt, ##__VA_ARGS__)
-#define LOGE(fmt, ...) LOG_LINE("E", fmt, ##__VA_ARGS__)
+#define LOGI(fmt, ...) log_emit('I', fmt, ##__VA_ARGS__)
+#define LOGW(fmt, ...) log_emit('W', fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) log_emit('E', fmt, ##__VA_ARGS__)
+
+// The ring's capacity, advertised to the server.
+#define LOG_RING_BYTES (24 * 1024)
+
+// Copy the ring (oldest line first) into out; returns the length.
+size_t log_ring_copy(char *out, size_t cap);
