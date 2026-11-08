@@ -349,12 +349,16 @@ static void sync_deck(const char *base, const char *device_id, const char *token
         if (s_has_deck) { LOGI("cache: deck unbound; clearing it"); clear_dir(DIR_DECK); s_has_deck = false; s_page[0] = 0; s_dirty = true; }
         return;
     }
-    static deck_manifest_t m;
-    if (code != 200 || !r.body || r.truncated || !deck_manifest_parse(r.body, r.body_len, &m)) {
-        LOGW("cache: deck manifest unusable (http %d)", code);
+    // Parsed into a heap copy (about 21 KB) so a bad manifest never
+    // replaces a good one; freed after the sync, so it costs no static RAM.
+    deck_manifest_t *mp = malloc(sizeof *mp);
+    if (!mp || code != 200 || !r.body || r.truncated || !deck_manifest_parse(r.body, r.body_len, mp)) {
+        LOGW("cache: deck manifest unusable (http %d%s)", code, mp ? "" : ", no memory");
+        free(mp);
         http_resp_free(&r);
         return;
     }
+#define m (*mp)
     bool new_deck = !s_has_deck || strcmp(m.deck_id, s_deck.deck_id) != 0;
     if (new_deck) clear_dir(DIR_DECK);
     int fetched = 0;
@@ -368,6 +372,8 @@ static void sync_deck(const char *base, const char *device_id, const char *token
     write_file(DIR_DECK "/manifest.json", r.body, r.body_len);
     http_resp_free(&r);
     s_deck = m;
+#undef m
+    free(mp);
     s_has_deck = true;
     prune(DIR_DECK, deck_keeps);
     if (new_deck || !deck_find_page(&s_deck, s_page)) snprintf(s_page, sizeof s_page, "%s", s_deck.entry_page_id);
@@ -388,12 +394,14 @@ static void sync_album(const char *base, const char *device_id, const char *toke
         if (s_has_album) { LOGI("cache: album unbound; clearing it"); clear_dir(DIR_ALBUM); s_has_album = false; s_album_state = "idle"; s_dirty = true; }
         return;
     }
-    static fc_manifest_t m;
-    if (code != 200 || !r.body || r.truncated || !fc_manifest_parse(r.body, r.body_len, &m)) {
-        LOGW("cache: album manifest unusable (http %d)", code);
+    fc_manifest_t *mp = malloc(sizeof *mp);
+    if (!mp || code != 200 || !r.body || r.truncated || !fc_manifest_parse(r.body, r.body_len, mp)) {
+        LOGW("cache: album manifest unusable (http %d%s)", code, mp ? "" : ", no memory");
+        free(mp);
         http_resp_free(&r);
         return;
     }
+#define m (*mp)
     bool new_album = !s_has_album || strcmp(m.collection_id, s_album.collection_id) != 0;
     if (new_album) clear_dir(DIR_ALBUM);
     int fetched = 0;
@@ -409,6 +417,8 @@ static void sync_album(const char *base, const char *device_id, const char *toke
     http_resp_free(&r);
     if (new_album || strcmp(s_play.version, m.version) != 0) fc_play_reset(&s_play, m.version, get_rand_32());
     s_album = m;
+#undef m
+    free(mp);
     s_has_album = true;
     prune(DIR_ALBUM, album_keeps);
     s_album_state = "playing";

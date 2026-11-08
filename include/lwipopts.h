@@ -9,7 +9,12 @@
 #define LWIP_NETCONN                0
 #define MEM_LIBC_MALLOC             0
 #define MEM_ALIGNMENT               4
+// The Pico W (RP2040, 264 KB) trades heap for room: INKY_LOW_RAM.
+#ifdef INKY_LOW_RAM
+#define MEM_SIZE                    36000
+#else
 #define MEM_SIZE                    56000
+#endif
 #define MEMP_NUM_TCP_SEG            32
 #define MEMP_NUM_ARP_QUEUE          10
 #define PBUF_POOL_SIZE              24
