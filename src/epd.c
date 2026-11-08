@@ -99,6 +99,9 @@ static void setup(void)
     // Spectra 6 E673 (pimoroni/inky inky_e673.py)
     CMD(CMDH, 0x49, 0x55, 0x20, 0x08, 0x09, 0x18);
     CMD(PWR, 0x3F);
+    // inky_e673.py's value. The Frame's 180-degree turn is done while
+    // streaming (EPD_ROTATE_180 in epd_paint()), which does not depend on how
+    // the controller treats PSR's scan bits.
     CMD(PSR, 0x5F, 0x69);
     CMD(BTST1, 0x40, 0x1F, 0x1F, 0x2C);
     CMD(BTST3, 0x6F, 0x1F, 0x1F, 0x22);
@@ -134,6 +137,24 @@ static void setup(void)
 #endif
 }
 
+// The Spectra 6 Frame mounts the E673 so that its scan starts at the
+// dashboard's bottom-right: send the rows last to first, each reversed.
+#if PANEL_VARIANT == PANEL_SPECTRA
+#define EPD_ROTATE_180 1
+#else
+#define EPD_ROTATE_180 0
+#endif
+
+// Reverse a row of 4 bpp pixels in place (high nibble = left pixel).
+static void reverse_row(uint8_t *line)
+{
+    for (int i = 0, j = ROW_BYTES - 1; i <= j; i++, j--) {
+        uint8_t a = line[i], b = line[j];
+        line[i] = (uint8_t)((b << 4) | (b >> 4));
+        line[j] = (uint8_t)((a << 4) | (a >> 4));
+    }
+}
+
 bool epd_paint(epd_row_fn row, void *arg)
 {
     uint32_t c, r;
@@ -158,7 +179,12 @@ bool epd_paint(epd_row_fn row, void *arg)
     dc_data(true);
     cs(false);
     for (int y = 0; y < PANEL_H; y++) {
-        row(y, line, arg);          // may drive the shared bus (PSRAM)
+        if (EPD_ROTATE_180) {
+            row(PANEL_H - 1 - y, line, arg);   // may drive the shared bus (PSRAM)
+            reverse_row(line);
+        } else {
+            row(y, line, arg);                 // may drive the shared bus (PSRAM)
+        }
         uint32_t pc, pr;
         claim(&pc, &pr);            // restore the panel's clock and format
         cs(true);
