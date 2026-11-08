@@ -96,7 +96,10 @@ tools/install_partitions.sh
 The script writes [partitions/pt.json](partitions/pt.json) (two 2036 KB
 slots; the last 16 KB, where Wi-Fi, server and pairing live, stays outside
 both) and loads the firmware into slot A. After that, `pio run -t upload`
-keeps working for development. A frame without the table runs normally but
+keeps working: picotool writes the slot the frame is not running from and
+boots it. The boot ROM prefers the slot with the higher `FW_VERSION`, so bump
+it (include/version.h) for a build you want a later update or power cycle to
+treat as newer. A frame without the table runs normally but
 does not offer updates. The Pico W (RP2040) builds have no A/B boot ROM and no
 over-the-air updates.
 
