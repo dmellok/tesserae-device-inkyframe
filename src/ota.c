@@ -252,6 +252,9 @@ static bool write_partition(const slot_t *slot, uint32_t size)
 
 void ota_offer(const char *payload, const char *signature, const char *kind, bool on_usb, uint32_t vsys_mv)
 {
+#ifdef TLS_SELFTEST
+    return;   // bench: never install while testing downloads
+#endif
     if (!s_partitioned || s_trial) return;
     ota_manifest_t m;
     ota_verify_result_t v = ota_verify_descriptor(payload, signature, kind, FW_VERSION, &m);

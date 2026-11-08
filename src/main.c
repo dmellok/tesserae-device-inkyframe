@@ -412,6 +412,18 @@ static int32_t selftest(void)
 }
 #endif
 
+#ifdef TLS_SELFTEST
+#include "sha256.h"
+static sha256_ctx_t s_st_sha;
+static uint32_t s_st_got;
+static void selftest_sink(const uint8_t *data, size_t len, void *arg)
+{
+    (void)arg;
+    sha256_update(&s_st_sha, data, len);
+    s_st_got += (uint32_t)len;
+}
+#endif
+
 // ---- the cloud relay (a frame that cannot reach the server) ----
 
 static void relay_apply(const relay_status_t *rs)
@@ -535,6 +547,16 @@ static int32_t cycle(int wake_button)
                 LOGI("tls selftest: %s -> %d (%u bytes)", urls[i], code, (unsigned)r.body_len);
                 http_resp_free(&r);
             }
+            // A large HTTPS download (the 0.3.1 OTA image), streamed and hashed.
+            sha256_init(&s_st_sha); s_st_got = 0;
+            http_resp_t r;
+            int code = http_request("GET", "https://tesserae-ota-signer.dmellok.workers.dev/firmware/pimoroni_inky_frame_73/0.3.1/" TLS_SELFTEST_SHA ".bin",
+                                    NULL, 0, NULL, &r, NULL, selftest_sink, NULL, 120000, 10000);
+            uint8_t d[32]; char hex[65];
+            sha256_final(&s_st_sha, d); sha256_hex(d, hex);
+            LOGI("tls selftest: big download -> %d, %lu bytes, sha256 %s", code, (unsigned long)s_st_got,
+                 strcmp(hex, TLS_SELFTEST_SHA) == 0 ? "MATCHES" : "differs");
+            http_resp_free(&r);
         }
     }
 #endif
