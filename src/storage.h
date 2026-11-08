@@ -36,3 +36,11 @@ void storage_set_awake_poll_s(int32_t s);
 
 uint8_t storage_backoff(void);
 void storage_set_backoff(uint8_t s);
+
+// Factory reset: erase the state record (pairing, ETag, server config).
+void storage_erase(void);
+
+// The setup portal has been offered once during the current Wi-Fi outage, so
+// it is not offered again until the network comes back.
+bool storage_portal_offered(void);
+void storage_set_portal_offered(bool v);

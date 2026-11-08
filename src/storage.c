@@ -16,7 +16,7 @@
 // commit runs just before VSYS is dropped, when a tired battery is most likely
 // to sag) leaves the previous record intact and the device stays paired.
 #define SECTOR_COUNT    2u
-#define SECTOR_OFFSET   (PICO_FLASH_SIZE_BYTES - SECTOR_COUNT * FLASH_SECTOR_SIZE)
+#define SECTOR_OFFSET   FLASH_STATE_OFFSET
 #define RECORD_SIZE     512u
 #define SLOTS_PER_SECTOR (FLASH_SECTOR_SIZE / RECORD_SIZE)
 #define SLOTS           (SLOTS_PER_SECTOR * SECTOR_COUNT)
@@ -190,6 +190,24 @@ bool storage_always_on(void) { return s_rec.always_on; }
 void storage_set_always_on(bool v) { if (s_rec.always_on != (uint8_t)v) { s_rec.always_on = v; s_dirty = true; } }
 int32_t storage_awake_poll_s(void) { return s_rec.awake_poll_s; }
 void storage_set_awake_poll_s(int32_t s) { if (s_rec.awake_poll_s != s) { s_rec.awake_poll_s = s; s_dirty = true; } }
+
+void storage_erase(void)
+{
+    uint32_t ints = save_and_disable_interrupts();
+    flash_range_erase(SECTOR_OFFSET, SECTOR_COUNT * FLASH_SECTOR_SIZE);
+    restore_interrupts(ints);
+    s_slot = -1;
+    defaults();
+    s_dirty = false;
+    LOGW("storage: erased");
+}
+
+bool storage_portal_offered(void) { return s_rec.reserved & 1; }
+void storage_set_portal_offered(bool v)
+{
+    uint8_t r = v ? (s_rec.reserved | 1) : (s_rec.reserved & ~1);
+    if (r != s_rec.reserved) { s_rec.reserved = r; s_dirty = true; }
+}
 
 uint8_t storage_backoff(void) { return s_rec.backoff; }
 void storage_set_backoff(uint8_t s) { if (s_rec.backoff != s) { s_rec.backoff = s; s_dirty = true; } }

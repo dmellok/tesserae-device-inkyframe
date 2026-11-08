@@ -74,8 +74,10 @@ void power_sleep(uint32_t seconds, bool on_usb, int *button)
         int b = -1;
         for (int i = 0; i < 5; i++) if (sr & (1u << i)) { b = i; break; }
         if (b >= 0) {
+            // Refresh is returned while still down, so the caller can time a
+            // setup / factory-reset hold; other buttons wait for the release.
             absolute_time_t t = make_timeout_time_ms(2000);
-            while (board_button_down(b) && !time_reached(t)) sleep_ms(20);
+            while (b != BUTTON_SETUP_INDEX && board_button_down(b) && !time_reached(t)) sleep_ms(20);
             if (button) *button = b;
             break;
         }

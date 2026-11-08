@@ -124,13 +124,19 @@ void tess_register(const char *base, const tess_identity_t *id, const char *code
 }
 
 void tess_get_frame(const char *base, const char *device_id, const char *token, const char *etag,
-                    const char *button, uint32_t event_id, tess_frame_t *out)
+                    const char *button, const char *button_key, uint32_t event_id, tess_frame_t *out)
 {
     memset(out, 0, sizeof *out);
     out->button_wake_s = -1;
     char url[320];
     int n = snprintf(url, sizeof url, "%s/api/v1/device/%s/frame", base, device_id);
-    if (button && button[0]) snprintf(url + n, sizeof url - n, "?button=%s&button_event_id=%lu", button, (unsigned long)event_id);
+    if (button && button[0]) {
+        n += snprintf(url + n, sizeof url - n, "?button=%s&button_event_id=%lu", button, (unsigned long)event_id);
+        // The physical button rides beside the action, so the server's
+        // button map can bind each one on its own (Tesserae 0.505+).
+        if (button_key && button_key[0] && n < (int)sizeof url)
+            snprintf(url + n, sizeof url - n, "&button_key=%s", button_key);
+    }
 
     char auth[300], inm[128];
     bearer(auth, sizeof auth, token);
@@ -182,6 +188,7 @@ void tess_post_status(const char *base, const char *device_id, const char *token
     if (t->button && t->button[0]) {
         cJSON_AddStringToObject(o, "button", t->button);
         cJSON_AddNumberToObject(o, "button_event_id", t->button_event_id);
+        if (t->button_key && t->button_key[0]) cJSON_AddStringToObject(o, "button_key", t->button_key);
     }
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);

@@ -8,6 +8,7 @@
 #include "log.h"
 #include "psram.h"
 #include "vendor/font8x8_basic.h"
+#include "vendor/qrcodegen.h"
 
 // A page is a small list of text items; the frame is composed into PSRAM in
 // bands of 8 rows so only a 3,200-byte SRAM buffer is needed.
@@ -17,7 +18,7 @@ typedef struct {
     uint8_t colour;
 } item_t;
 
-#define MAX_ITEMS 8
+#define MAX_ITEMS 12
 static item_t s_items[MAX_ITEMS];
 static int s_nitems;
 
@@ -62,12 +63,45 @@ static void draw_item(uint8_t *band, int band_y, const item_t *it)
     }
 }
 
+// One optional QR code per page, drawn as black modules on white.
+static uint8_t s_qr[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+static bool s_has_qr;
+static int s_qr_x, s_qr_y, s_qr_scale;
+
+static void set_qr(const char *text, int x, int y, int max_px)
+{
+    static uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+    s_has_qr = qrcodegen_encodeText(text, tmp, s_qr, qrcodegen_Ecc_MEDIUM, 1, 10, qrcodegen_Mask_AUTO, true);
+    if (!s_has_qr) { LOGW("screen: QR encode failed"); return; }
+    int modules = qrcodegen_getSize(s_qr) + 8;   // 4-module quiet zone each side
+    s_qr_scale = max_px / modules;
+    if (s_qr_scale < 2) { s_has_qr = false; return; }
+    s_qr_x = x + 4 * s_qr_scale;
+    s_qr_y = y + 4 * s_qr_scale;
+}
+
+static void draw_qr(uint8_t *band, int band_y)
+{
+    if (!s_has_qr) return;
+    int size = qrcodegen_getSize(s_qr);
+    for (int row = 0; row < 8; row++) {
+        int py = band_y + row - s_qr_y;
+        if (py < 0 || py >= size * s_qr_scale) continue;
+        int my = py / s_qr_scale;
+        for (int mx = 0; mx < size; mx++) {
+            if (!qrcodegen_getModule(s_qr, mx, my)) continue;
+            for (int sx = 0; sx < s_qr_scale; sx++) set_pixel(band, s_qr_x + mx * s_qr_scale + sx, row, PAL_BLACK);
+        }
+    }
+}
+
 static void compose(void)
 {
     static uint8_t band[ROW_BYTES * 8];
     for (int y = 0; y < PANEL_H; y += 8) {
         memset(band, (PAL_WHITE << 4) | PAL_WHITE, sizeof band);
         for (int i = 0; i < s_nitems; i++) draw_item(band, y, &s_items[i]);
+        draw_qr(band, y);
         psram_write((uint32_t)y * ROW_BYTES, band, sizeof band);
     }
 }
@@ -82,6 +116,7 @@ static bool paint(void)
 {
     compose();
     s_nitems = 0;
+    s_has_qr = false;
     return epd_paint(psram_row, NULL);
 }
 
@@ -114,5 +149,26 @@ bool screen_message(const char *title, const char *line1, const char *line2, con
     add(line3, 40, 216, 2, PAL_BLACK);
     add("Inky Frame 7.3 / Tesserae client v" FW_VERSION, 40, 440, 2, PAL_BLACK);
     LOGI("screen: %s", title);
+    return paint();
+}
+
+
+bool screen_setup(const char *ap_ssid, const char *ap_pass, const char *portal_url, const char *reason)
+{
+    static char l_ssid[48], l_pass[48], l_qr[128];
+    snprintf(l_ssid, sizeof l_ssid, "%s", ap_ssid);
+    snprintf(l_pass, sizeof l_pass, "password: %s", ap_pass);
+    snprintf(l_qr, sizeof l_qr, "WIFI:T:WPA;S:%s;P:%s;;", ap_ssid, ap_pass);
+    s_nitems = 0;
+    add("Set up this frame", 40, 40, 4, PAL_RED);
+    add(reason, 40, 92, 2, PAL_BLUE);
+    add("1. Join the Wi-Fi network", 40, 140, 2, PAL_BLACK);
+    add(l_ssid, 72, 172, 2, PAL_BLACK);
+    add(l_pass, 72, 200, 2, PAL_BLACK);
+    add("2. Open " SETUP_PORTAL_URL, 40, 248, 2, PAL_BLACK);
+    add("3. Enter your Wi-Fi + server", 40, 296, 2, PAL_BLACK);
+    add("Inky Frame 7.3 / Tesserae client v" FW_VERSION, 40, 440, 2, PAL_BLACK);
+    set_qr(l_qr, 540, 120, 240);
+    LOGI("screen: setup page (%s)", ap_ssid);
     return paint();
 }

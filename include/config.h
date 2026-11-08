@@ -1,9 +1,30 @@
 // Build-time configuration for the Inky Frame 7.3" Tesserae client.
-// Network credentials and the server URL live in secrets.h (git-ignored).
+//
+// Wi-Fi and the server are entered in the setup portal and kept in flash
+// (settings.c). include/secrets.h (git-ignored, optional) seeds them on first
+// boot so a development build can skip the portal.
 #pragma once
 
+#if __has_include("secrets.h")
 #include "secrets.h"
+#endif
 #include "version.h"
+
+#ifndef WIFI_SSID
+#define WIFI_SSID            ""
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS            ""
+#endif
+#ifndef TESSERAE_SERVER_URL
+#define TESSERAE_SERVER_URL  ""
+#endif
+#ifndef TESSERAE_FALLBACK_IP
+#define TESSERAE_FALLBACK_IP ""
+#endif
+#ifndef TESSERAE_PAIRING_CODE
+#define TESSERAE_PAIRING_CODE ""
+#endif
 
 // ---- panel variant ----------------------------------------------------------
 // The 7.3" Inky Frame shipped with two different panels that share every pin:
@@ -88,14 +109,35 @@
 #define PIN_VSYS_ADC         29     // Pico W: VSYS/3, ADC channel 3
 
 // ---- buttons ----------------------------------------------------------------
-// Tesserae button names sent for each front button ("" = not mapped). The
-// server's default button map knows left / right / refresh; other names need
-// a custom map on the device card.
+// Tesserae button action for each front button. Every press also carries its
+// letter as button_key ("a".."e"), which the server's button map checks first,
+// so each button can be bound on its own; a button with no action here ("")
+// goes by its letter alone.
 #define BUTTON_A_NAME        "left"
 #define BUTTON_B_NAME        ""
 #define BUTTON_C_NAME        "refresh"
 #define BUTTON_D_NAME        ""
 #define BUTTON_E_NAME        "right"
+// Hold Refresh (button C) as the frame wakes: this long opens the setup
+// portal, and this long wipes Wi-Fi, server and pairing (factory reset).
+#define BUTTON_SETUP_INDEX   2
+#define HOLD_SETUP_MS        5000
+#define HOLD_RESET_MS        20000
+
+// ---- setup portal -----------------------------------------------------------
+// The access point a fresh (or reset) frame opens: "<prefix>-XXXX", WPA2 with
+// this password, matching the ESP32 firmware's setup network.
+#define SETUP_AP_PREFIX      "Tesserae-Setup"
+#define SETUP_AP_PASSWORD    "tesserae"
+#define SETUP_PORTAL_URL     "http://192.168.4.1/"
+// On battery, close an unused portal and power off after this long.
+#define SETUP_IDLE_TIMEOUT_MS (15u * 60u * 1000u)
+
+// ---- flash layout -----------------------------------------------------------
+// The last four 4 KB sectors: two for the device state record (storage.c),
+// two below them for the portal settings (settings.c).
+#define FLASH_STATE_OFFSET    (PICO_FLASH_SIZE_BYTES - 2u * 4096u)
+#define FLASH_SETTINGS_OFFSET (PICO_FLASH_SIZE_BYTES - 4u * 4096u)
 
 // ---- sleep and retry --------------------------------------------------------
 // Bounds applied to server sleep values; the RTC alarm has no month field, so

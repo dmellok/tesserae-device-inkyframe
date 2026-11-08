@@ -41,6 +41,7 @@ typedef struct {
     const char *ip;
     const char *mac;
     const char *button;       // NULL = none pending
+    const char *button_key;   // physical button "a".."e", or NULL
     uint32_t button_event_id;
     bool can_stay_awake;
 } tess_telemetry_t;
@@ -62,7 +63,7 @@ tess_kind_probe_t tess_probe_kind(const char *base, const tess_identity_t *id);
 void tess_discover(const char *base, const tess_identity_t *id, tess_pair_t *out);
 void tess_register(const char *base, const tess_identity_t *id, const char *code, tess_pair_t *out);
 void tess_get_frame(const char *base, const char *device_id, const char *token, const char *etag,
-                    const char *button, uint32_t event_id, tess_frame_t *out);
+                    const char *button, const char *button_key, uint32_t event_id, tess_frame_t *out);
 void tess_post_status(const char *base, const char *device_id, const char *token,
                       const tess_telemetry_t *t, tess_status_t *out);
 void tess_post_log(const char *base, const char *device_id, const char *token, const char *level, const char *msg);

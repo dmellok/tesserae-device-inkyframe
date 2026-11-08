@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "settings.h"
 
 static bool s_inited = false;
 static bool s_connected = false;
@@ -39,12 +40,15 @@ bool wifi_connect(void)
 
     for (int a = 1; a <= WIFI_JOIN_ATTEMPTS; a++) {
         uint32_t t0 = to_ms_since_boot(get_absolute_time());
-        int r = cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASS, CYW43_AUTH_WPA2_AES_PSK, WIFI_CONNECT_TIMEOUT_MS);
+        const char *pass = settings_pass();
+        int r = cyw43_arch_wifi_connect_timeout_ms(settings_ssid(), pass[0] ? pass : NULL,
+                                                   pass[0] ? CYW43_AUTH_WPA2_AES_PSK : CYW43_AUTH_OPEN,
+                                                   WIFI_CONNECT_TIMEOUT_MS);
         if (r == 0) {
             const ip4_addr_t *ip = netif_ip4_addr(netif_default);
             snprintf(s_ip, sizeof s_ip, "%s", ip ? ip4addr_ntoa(ip) : "0.0.0.0");
             s_connected = true;
-            LOGI("wifi: connected to '%s', ip=%s rssi=%d (%lu ms)", WIFI_SSID, s_ip, wifi_rssi(),
+            LOGI("wifi: connected to '%s', ip=%s rssi=%d (%lu ms)", settings_ssid(), s_ip, wifi_rssi(),
                  (unsigned long)(to_ms_since_boot(get_absolute_time()) - t0));
             return true;
         }
@@ -244,8 +248,8 @@ const char *wifi_server_base(void)
 {
     if (s_base[0]) return s_base;
     char scheme[12], host[64], port[8]; const char *path;
-    if (!split_url(TESSERAE_SERVER_URL, scheme, sizeof scheme, host, sizeof host, port, sizeof port, &path)) {
-        LOGE("bad TESSERAE_SERVER_URL");
+    if (!split_url(settings_server_url(), scheme, sizeof scheme, host, sizeof host, port, sizeof port, &path)) {
+        LOGE("bad server URL '%s'", settings_server_url());
         return "";
     }
     size_t hl = strlen(host);
@@ -256,8 +260,8 @@ const char *wifi_server_base(void)
         if (wifi_resolve(host, &ip, MDNS_QUERY_TIMEOUT_MS)) {
             snprintf(s_resolved, sizeof s_resolved, "%s", ipaddr_ntoa(&ip));
             LOGI("mdns: %s -> %s", host, s_resolved);
-        } else if (strlen(TESSERAE_FALLBACK_IP) > 0) {
-            snprintf(s_resolved, sizeof s_resolved, "%s", TESSERAE_FALLBACK_IP);
+        } else if (settings_fallback_ip()[0]) {
+            snprintf(s_resolved, sizeof s_resolved, "%s", settings_fallback_ip());
             LOGW("mdns: %s did not resolve; using fallback %s", host, s_resolved);
         } else {
             LOGE("mdns: %s did not resolve and no fallback IP is set", host);
