@@ -76,9 +76,11 @@ static void open_portal(const char *reason)
 {
     wifi_off();
     LOGI("setup: opening the portal (%s)", reason[0] ? reason : "not configured");
+    // The setup page is about to replace whatever is on the glass. Say so
+    // before it is painted: saving the form reboots from inside the portal,
+    // and the next boot must fetch a full frame rather than trust its ETag.
+    set_screen(SCREEN_UNKNOWN);
     portal_run(reason);
-    s_screen = SCREEN_UNKNOWN;   // the setup page replaced whatever was showing
-    pcf_ram_set(s_screen);
 }
 
 // Unreachable Wi-Fi / server: escalating backoff, drawing an error page only
@@ -482,6 +484,7 @@ static bool handle_setup_hold(void)
             for (int i = 0; i < 5; i++) board_led_button(i, 100);
             settings_erase();
             storage_erase();
+            set_screen(SCREEN_UNKNOWN);
             screen_message("Factory reset", "Wi-Fi, server and pairing are cleared.", "Restarting into setup.", "");
             watchdog_reboot(0, 0, 0);
             while (true) tight_loop_contents();
