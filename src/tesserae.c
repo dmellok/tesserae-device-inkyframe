@@ -172,12 +172,8 @@ void tess_get_frame(const char *base, const char *device_id, const char *token, 
     http_resp_free(&r);
 }
 
-void tess_post_status(const char *base, const char *device_id, const char *token,
-                      const tess_telemetry_t *t, tess_status_t *out)
+char *tess_status_body(const tess_telemetry_t *t, uint32_t *diag_sent)
 {
-    memset(out, 0, sizeof *out);
-    out->next_poll_s = -1; out->sleep_interval_s = -1; out->button_wake_s = -1; out->always_on = -1; out->awake_poll_s = -1;
-
     cJSON *o = cJSON_CreateObject();
     if (t->battery_mv) cJSON_AddNumberToObject(o, "battery_mv", t->battery_mv);
     cJSON_AddNumberToObject(o, "rssi", t->rssi);
@@ -189,7 +185,8 @@ void tess_post_status(const char *base, const char *device_id, const char *token
     cJSON_AddNumberToObject(o, "panel_h", PANEL_H);
     if (t->can_stay_awake) cJSON_AddBoolToObject(o, "can_stay_awake", true);
     ota_add_capability(o);
-    uint32_t diag_sent = diag_add_status(o);
+    uint32_t sent = diag_add_status(o);
+    if (diag_sent) *diag_sent = sent;
     if (t->button && t->button[0]) {
         cJSON_AddStringToObject(o, "button", t->button);
         cJSON_AddNumberToObject(o, "button_event_id", t->button_event_id);
@@ -197,6 +194,16 @@ void tess_post_status(const char *base, const char *device_id, const char *token
     }
     char *body = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
+    return body;
+}
+
+void tess_post_status(const char *base, const char *device_id, const char *token,
+                      const tess_telemetry_t *t, tess_status_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->next_poll_s = -1; out->sleep_interval_s = -1; out->button_wake_s = -1; out->always_on = -1; out->awake_poll_s = -1;
+    uint32_t diag_sent = 0;
+    char *body = tess_status_body(t, &diag_sent);
 
     char url[256], auth[300];
     snprintf(url, sizeof url, "%s/api/v1/device/%s/status", base, device_id);

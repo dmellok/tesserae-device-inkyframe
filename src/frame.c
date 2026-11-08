@@ -46,6 +46,8 @@ int frame_download(const char *url)
 
 size_t frame_received(void) { return s_received; }
 
+void frame_set_complete(bool complete) { s_complete = complete; s_received = complete ? FRAME_BYTES : 0; }
+
 static void psram_row(int y, uint8_t *out, void *arg)
 {
     (void)arg;

@@ -29,6 +29,7 @@
 #include "portal.h"
 #include "power.h"
 #include "psram.h"
+#include "relay.h"
 #include "rtc.h"
 #include "screen.h"
 #include "settings.h"
@@ -410,6 +411,88 @@ static int32_t selftest(void)
 }
 #endif
 
+// ---- the cloud relay (a frame that cannot reach the server) ----
+
+static void relay_apply(const relay_status_t *rs)
+{
+    if (rs->sleep_interval_s > 0) storage_set_sleep_s(power_clamp_sleep_s(rs->sleep_interval_s));
+    if (rs->button_wake_s >= 0) storage_set_button_wake_s(rs->button_wake_s);
+}
+
+// The relay revoked this pairing (401): forget it and ask for a new code.
+static int32_t relay_revoked(void)
+{
+    LOGW("relay: 401, the pairing was revoked");
+    settings_relay_drop(false);
+    settings_commit();
+    open_portal("This frame's cloud relay pairing was removed. Enter a new pairing code from Tesserae > Settings > Cloud relay.");
+    return 60;
+}
+
+static int32_t cycle_relay(int wake_button)
+{
+    if (!settings_relay_paired()) {
+        if (s_screen != SCREEN_PAIRING) {
+            static char l2[64];
+            snprintf(l2, sizeof l2, "Pairing code %s", settings_relay_code());
+            screen_message("Pairing with the cloud relay", "Approve this frame in Tesserae:", "Settings > Cloud relay", l2);
+            set_screen(SCREEN_PAIRING);
+        }
+        relay_pair_result_t pr = relay_pair(PAIRING_AWAKE_BUDGET_S * 1000u);
+        settings_commit();   // the pairing latch must survive a power-off
+        if (pr == RELAY_CODE_DEAD) {
+            settings_relay_drop(false);
+            settings_commit();
+            open_portal("The cloud relay pairing code expired or is unknown. Make a new one in Tesserae > Settings > Cloud relay.");
+            return 60;
+        }
+        if (pr == RELAY_REJECTED) return fail_backoff("Relay refused pairing", "The cloud relay rejected this frame.");
+        if (pr == RELAY_UNREACHABLE) return setup_or_backoff("Relay unreachable", "Could not reach the cloud relay.",
+                                                              "Can't reach the cloud relay. Check the relay URL.");
+        if (pr == RELAY_WAITING) { wifi_off(); return 60; }
+        s_reached_server = true;
+    }
+
+    // 1. Frame.
+    bool opened = false; char etag[80] = "";
+    const char *have = s_screen == SCREEN_FRAME ? storage_etag() : "";
+    int code = relay_fetch_frame(have, &opened, etag, sizeof etag);
+    if (code == 401) return relay_revoked();
+    if (code <= 0) return setup_or_backoff("Relay unreachable", "Could not reach the cloud relay.",
+                                          "Can't reach the cloud relay. Check the relay URL.");
+    s_reached_server = true;
+
+    // 2. Status, carrying any button press: the relay forwards it home. The
+    //    press is repeated on every post of this wake (the slot is latest-only).
+    int button = wake_button;
+    uint32_t event_id = button >= 0 ? storage_next_event_id() : 0;
+    tess_telemetry_t t; telemetry(&t, button, event_id);
+    relay_status_t rs;
+    relay_post_status(&t, &rs);
+    if (rs.code == 401) return relay_revoked();
+    if (rs.code == 200) { relay_apply(&rs); diag_acknowledge(rs.diag_sent); }
+    storage_set_backoff(0);
+
+    // 3. Paint. After a press, keep polling the mailbox through the awake
+    //    window for the frame home renders in response.
+    bool linger = button >= 0 && storage_button_wake_s() > 0;
+    if (!linger) wifi_off();
+    if (opened) paint_downloaded(etag);
+    else if (code == 204) no_dashboard_page();
+    if (linger) {
+        absolute_time_t deadline = make_timeout_time_ms((uint32_t)storage_button_wake_s() * 1000u);
+        while (!time_reached(deadline)) {
+            sleep_ms(5000);
+            relay_post_status(&t, &rs);
+            code = relay_fetch_frame(storage_etag(), &opened, etag, sizeof etag);
+            if (code == 401) return relay_revoked();
+            if (opened) { paint_downloaded(etag); break; }
+        }
+        wifi_off();
+    }
+    return power_clamp_sleep_s(storage_sleep_s());
+}
+
 // One wake cycle. Returns the number of seconds to sleep.
 static int32_t cycle(int wake_button)
 {
@@ -452,6 +535,7 @@ static int32_t cycle(int wake_button)
     }
     board_led(LED_CONNECTION, 20);
     s_on_usb = wifi_on_usb();
+    if (settings_relay_mode()) return cycle_relay(wake_button);
     uint32_t vsys = power_sample_vsys_mv();
     LOGI("power: %s, vsys %lu mV", s_on_usb ? "USB" : "battery", (unsigned long)vsys);
 
@@ -528,6 +612,7 @@ static int32_t cycle(int wake_button)
 // Write what the cycle learnt about the settings (radio is down by now).
 static void settle_settings(void)
 {
+    settings_commit();   // relay pairing state, if it changed
     if (s_reached_server) settings_set_verified();
     if (s_used_pairing_code) settings_clear_pairing_code();
     s_reached_server = s_used_pairing_code = false;

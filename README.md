@@ -111,6 +111,19 @@ checks on the host against Tesserae's signed test fixtures, and
 install, confirm and rollback on a frame with the published test key (bench
 builds only; never ship them).
 
+## Cloud relay
+
+For a frame that cannot reach the Tesserae server (another house, a phone
+hotspot), make a pairing code in Tesserae under **Settings → Cloud relay** and
+enter it in the setup page's **Cloud relay** card instead of a server URL. The
+frame and the server then both talk outbound to the relay
+(`https://relay.tesserae.ink`, or your own) over HTTPS. Frames and config are
+sealed with a key each side derives (X25519 + HKDF-SHA256, AES-256-GCM), so the
+relay only ever holds ciphertext; status, battery and button presses are
+relayed back. The crypto is tested on the host against the relay contract's
+golden vectors. Removing the frame in Tesserae revokes the pairing, and the
+frame opens setup for a new code.
+
 ## Logs and failure reports
 
 The frame keeps its recent log in a 24 KB RAM ring. Collect logs from the

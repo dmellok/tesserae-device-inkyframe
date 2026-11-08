@@ -128,6 +128,22 @@ static const char k_form_server_fmt[] =
 "</div>"
 "</section>";
 
+/* Cloud relay card; %s = relay URL prefill. For a frame away from home. */
+static const char k_form_relay_fmt[] =
+"<section class=\"card\"><h2>Or: cloud relay</h2>"
+"<p class=\"hint\">For a frame that can't reach your server, such as one at another house. "
+"Make a code in Tesserae &rarr; Settings &rarr; Cloud relay; then the server URL above is not needed.</p>"
+"<div class=\"field\">"
+"<label for=\"relay_code\">Relay pairing code</label>"
+"<input id=\"relay_code\" name=\"relay_code\" maxlength=\"15\" autocomplete=\"off\" placeholder=\"leave blank to use the server\">"
+"</div>"
+"<div class=\"field\">"
+"<label for=\"relay_url\">Relay URL</label>"
+"<input id=\"relay_url\" name=\"relay_url\" maxlength=\"95\" autocomplete=\"off\" value=\"%s\">"
+"<p class=\"hint\">Leave as is for Tesserae's hosted relay.</p>"
+"</div>"
+"</section>";
+
 /* Why setup is showing, above the form; %s = the reason. */
 static const char k_reason_fmt[] =
 "<section class=\"card\"><p class=\"hint\" style=\"margin:0;color:#b42318\">%s</p></section>";
@@ -308,7 +324,7 @@ static void build_picker(char *dst, size_t cap)
 /* ---------- HTTP server (raw TCP) ---------- */
 
 #define REQ_MAX   1280
-#define PAGE_MAX  8192
+#define PAGE_MAX  12288
 
 static char           s_resp[PAGE_MAX];   /* one connection serviced at a time */
 static volatile bool  s_reboot_pending;
@@ -338,10 +354,11 @@ static char s_reason[96];
 /* Build the setup form into s_resp (HTTP response incl. headers). */
 static size_t build_form(void)
 {
-    char ssid[80], server[200], reason[160];
+    char ssid[80], server[200], reason[160], relay[160];
     html_escape(settings_ssid(), ssid, sizeof ssid);
     html_escape(settings_server_url(), server, sizeof server);
     html_escape(s_reason, reason, sizeof reason);
+    html_escape(settings_relay_url(), relay, sizeof relay);
 
     static char picker[640];
     build_picker(picker, sizeof picker);
@@ -352,6 +369,7 @@ static size_t build_form(void)
     if (reason[0]) n += snprintf(body + n, sizeof body - n, k_reason_fmt, reason);
     n += snprintf(body + n, sizeof body - n, k_form_wifi_fmt, ssid, picker);
     n += snprintf(body + n, sizeof body - n, k_form_server_fmt, server);
+    n += snprintf(body + n, sizeof body - n, k_form_relay_fmt, relay);
     n += snprintf(body + n, sizeof body - n, "%s", k_submit);
     n += snprintf(body + n, sizeof body - n, "%s", k_tail);
 
@@ -380,11 +398,13 @@ static volatile bool s_save_pending;
 
 static void save_form(const char *body)
 {
-    char ssid[40] = {0}, pass[80] = {0}, surl[200] = {0}, pcode[32] = {0};
+    char ssid[40] = {0}, pass[80] = {0}, surl[200] = {0}, pcode[32] = {0}, rcode[32] = {0}, rurl[128] = {0};
     bool has_ssid  = form_field(body, "ssid", ssid, sizeof ssid);
     bool has_pass  = form_field(body, "pass", pass, sizeof pass);
     bool has_surl  = form_field(body, "server_url", surl, sizeof surl);
     bool has_pcode = form_field(body, "pairing_code", pcode, sizeof pcode);
+    form_field(body, "relay_code", rcode, sizeof rcode);
+    form_field(body, "relay_url", rurl, sizeof rurl);
 
     /* NULL leaves a field unchanged; a blank password keeps the current one. */
     bool new_code = has_pcode && pcode[0];
@@ -392,6 +412,13 @@ static void save_form(const char *body)
                   has_surl ? surl : NULL, new_code ? pcode : NULL);
     /* A fresh pairing code means "(re)pair": drop the old token and ETag. */
     if (new_code) { storage_clear_pairing(); storage_commit(); }
+    if (rcode[0]) {
+        settings_save_relay(rurl, rcode);   // relay mode, a fresh pairing
+        storage_clear_pairing();
+    } else if (surl[0] && settings_relay_mode()) {
+        settings_relay_drop(false);         // back to the server
+        settings_commit();
+    }
     storage_set_portal_offered(false);
     storage_commit();
     LOGI("portal: saved (ssid '%s', server '%s'%s)", ssid, surl, new_code ? ", pairing code" : "");

@@ -70,6 +70,10 @@ void tess_discover(const char *base, const tess_identity_t *id, tess_pair_t *out
 void tess_register(const char *base, const tess_identity_t *id, const char *code, tess_pair_t *out);
 void tess_get_frame(const char *base, const char *device_id, const char *token, const char *etag,
                     const char *button, const char *button_key, uint32_t event_id, tess_frame_t *out);
+// The /status JSON body for this telemetry (malloc'd; free it). The relay
+// posts the same body. *diag_sent gets the diag id it carried, 0 if none.
+char *tess_status_body(const tess_telemetry_t *t, uint32_t *diag_sent);
+
 void tess_post_status(const char *base, const char *device_id, const char *token,
                       const tess_telemetry_t *t, tess_status_t *out);
 void tess_post_log(const char *base, const char *device_id, const char *token, const char *level, const char *msg);

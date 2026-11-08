@@ -10,6 +10,12 @@ if [ ! -f "$DEPS/src/monocypher.c" ]; then
     git clone -q https://github.com/LoupVaillant/Monocypher.git "$DEPS"
     git -C "$DEPS" checkout -q "$MONO_COMMIT"
 fi
+MBEDTLS_TAG=v3.6.2                                        # the Pico SDK's copy
+MBEDTLS=.deps/mbedtls
+if [ ! -f "$MBEDTLS/library/gcm.c" ]; then
+    rm -rf "$MBEDTLS"
+    git clone -q --depth 1 --branch "$MBEDTLS_TAG" https://github.com/Mbed-TLS/mbedtls.git "$MBEDTLS"
+fi
 SRC=../../src
 cc -std=gnu11 -O1 -Wall -Wextra -DOTA_TRUST_TEST_KEY=1 \
    -I"$SRC" -I"$DEPS/src" \
@@ -17,3 +23,13 @@ cc -std=gnu11 -O1 -Wall -Wextra -DOTA_TRUST_TEST_KEY=1 \
    "$DEPS/src/monocypher.c" "$DEPS/src/optional/monocypher-ed25519.c" \
    -o .deps/test_ota
 .deps/test_ota
+
+MB_SRC="$MBEDTLS/library"
+cc -std=gnu11 -O1 -Wall -Wextra -I"$SRC" -I"$DEPS/src" -I"$MBEDTLS/include" -I. \
+   -DMBEDTLS_CONFIG_FILE='"host_mbedtls_config.h"' \
+   test_relay.c "$SRC/relay_crypto.c" "$DEPS/src/monocypher.c" \
+   "$MB_SRC/gcm.c" "$MB_SRC/aes.c" "$MB_SRC/cipher.c" "$MB_SRC/cipher_wrap.c" "$MB_SRC/hkdf.c" \
+   "$MB_SRC/md.c" "$MB_SRC/sha256.c" "$MB_SRC/platform_util.c" "$MB_SRC/constant_time.c" \
+   "$MB_SRC/platform.c" "$MB_SRC/aesni.c" "$MB_SRC/aesce.c" \
+   -o .deps/test_relay
+.deps/test_relay

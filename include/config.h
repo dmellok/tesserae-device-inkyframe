@@ -187,3 +187,9 @@
 // On battery, refuse to install below this VSYS. The Frame reads the battery
 // through a diode, so this is about the ESP32 firmware's 3.6 V at the cell.
 #define OTA_MIN_VSYS_MV           3300
+
+// ---- cloud relay (src/relay.c) ----------------------------------------------
+#define RELAY_DEFAULT_URL         "https://relay.tesserae.ink"
+// Sealed frames are staged in PSRAM here before they are opened into the
+// frame store at 0.
+#define RELAY_PSRAM_OFFSET        (4u * 1024u * 1024u)
