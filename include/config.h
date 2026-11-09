@@ -189,6 +189,15 @@
 // through a diode, so this is about the ESP32 firmware's 3.6 V at the cell.
 #define OTA_MIN_VSYS_MV           3300
 
+// OTA logs (src/diag.h): the log this boot and the tail carried over a
+// reboot, uploaded tagged as an OTA log. The tail is kept in PSRAM, which
+// keeps its contents across a reboot that does not drop power (the install's
+// reboot, a trial that gives up) but not across a battery sleep.
+#define OTA_LOG_CARRY_PSRAM_OFFSET (7u * 1024u * 1024u)
+#define OTA_LOG_CARRY_BYTES       (32u * 1024u)
+#define OTA_LOG_BODY_MAX          (60u * 1024u)   // under the server's 64 KB
+#define OTA_LOG_TIMEOUT_MS        6000
+
 // ---- cloud relay (src/relay.c) ----------------------------------------------
 #define RELAY_DEFAULT_URL         "https://relay.tesserae.ink"
 // Sealed frames are staged in PSRAM here before they are opened into the

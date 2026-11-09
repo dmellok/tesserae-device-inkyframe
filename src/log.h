@@ -4,6 +4,7 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "pico/time.h"
 
@@ -22,3 +23,8 @@ void log_emit(char level, const char *fmt, ...) __attribute__((format(printf, 2,
 
 // Copy the ring (oldest line first) into out; returns the length.
 size_t log_ring_copy(char *out, size_t cap);
+
+// Bytes logged since boot (a running position; wraps at 4 GB).
+uint32_t log_ring_mark(void);
+// As log_ring_copy, but only what was logged after `mark` (log_ring_mark()).
+size_t log_ring_copy_since(char *out, size_t cap, uint32_t mark);

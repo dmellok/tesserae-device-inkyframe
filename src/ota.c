@@ -5,8 +5,10 @@
 #include "pico/stdlib.h"
 
 #include "config.h"
+#include "diag.h"
 #include "log.h"
 #include "storage.h"
+#include "wifi.h"
 
 // Report vocabulary, in the contract's spelling. Stored as indices.
 enum { PH_IDLE, PH_DOWNLOADING, PH_VALIDATING, PH_PENDING_CONFIRM, PH_CONFIRMED, PH_REJECTED, PH_FAILED, PH_ROLLED_BACK };
@@ -45,6 +47,53 @@ void ota_add_capability(cJSON *body)
     if (target[0]) cJSON_AddStringToObject(o, "target_fw", target);
     if (attempt[0]) cJSON_AddStringToObject(o, "attempt_id", attempt);
     if (detail[0]) cJSON_AddStringToObject(o, "detail", detail);
+}
+
+// ---- OTA logs ----
+
+// The attempt as the 24-bit hash the dedup key keeps (FNV-1a, folded).
+static uint32_t attempt_hash(const char *a)
+{
+    uint32_t h = 2166136261u;
+    for (; a && *a; a++) h = (h ^ (uint8_t)*a) * 16777619u;
+    return (h ^ (h >> 24)) & 0xFFFFFFu;
+}
+
+// A report an OTA log goes with. Verify-time refusals (already_current,
+// kind_mismatch, a bad signature) are not an attempt; the battery gate is.
+static bool log_worthy(uint8_t phase, uint8_t reason)
+{
+    switch (phase) {
+    case PH_FAILED: case PH_CONFIRMED: case PH_ROLLED_BACK: return true;
+    case PH_REJECTED: return reason == R_BATTERY_LOW || reason == R_BATTERY_UNKNOWN;
+    default: return false;
+    }
+}
+
+// A frame that first runs this firmware treats the report it already holds
+// as logged, so an old outcome does not upload a log of an unrelated wake.
+static __attribute__((unused)) void seed_log_key(void)
+{
+    uint8_t lp, lr; uint32_t la; bool set;
+    storage_get_ota_log_sent(&lp, &lr, &la, &set);
+    if (set) return;
+    uint8_t phase, reason; const char *target, *attempt, *detail;
+    storage_get_ota(&phase, &reason, &target, &attempt, &detail);
+    storage_set_ota_log_sent(phase, reason, attempt_hash(attempt));
+}
+
+void ota_log_flush(const char *base)
+{
+    if (!ota_supported() || !wifi_connected()) return;
+    uint8_t phase, reason; const char *target, *attempt, *detail;
+    storage_get_ota(&phase, &reason, &target, &attempt, &detail);
+    if (phase >= N_PHASES || !log_worthy(phase, reason)) return;
+    uint8_t lp, lr; uint32_t la; bool set;
+    storage_get_ota_log_sent(&lp, &lr, &la, &set);
+    uint32_t ah = attempt_hash(attempt);
+    if (set && lp == phase && lr == reason && la == ah) return;
+    if (diag_upload_ota_log(base, storage_device_id(), storage_token(), PHASES[phase], target, attempt))
+        storage_set_ota_log_sent(phase, reason, ah);   // committed with the wake's state
 }
 
 #if !PICO_RP2350
@@ -106,6 +155,7 @@ void ota_boot(void)
     LOGI("ota: running from %s%s, boot type %u", s_partitioned ? (s_partition == 0 ? "partition A" : "partition B") : "unpartitioned flash",
          s_trial ? " (update on trial)" : "", bi.boot_type);
 
+    seed_log_key();
     uint8_t phase, reason; const char *target, *attempt, *detail;
     storage_get_ota(&phase, &reason, &target, &attempt, &detail);
     if (s_trial) {
@@ -163,6 +213,7 @@ void ota_abandon_trial(const char *why)
     wifi_off();
     storage_commit();
     LOGW("ota: abandoning the update (%s); rebooting to the previous image", why);
+    diag_carry_save();   // the previous image sends it with its rolled_back log
     stdio_flush();
     watchdog_reboot(0, 0, 0);
     while (true) tight_loop_contents();
@@ -316,6 +367,11 @@ void ota_offer(const char *payload, const char *signature, const char *kind, boo
     if (strcmp(hex, m.sha256) != 0) { report(PH_FAILED, R_DIGEST_MISMATCH, m.fw_version, attempt, ""); return; }
     if (!image_looks_valid(m.size_bytes)) { report(PH_FAILED, R_IMAGE_INVALID, m.fw_version, attempt, "no picobin block"); return; }
 
+    // The download and the checks, as an OTA log, while the radio is still up
+    // (bounded; its outcome does not matter to the install). The slot write
+    // and the reboot are carried to the next boot in PSRAM.
+    diag_upload_ota_log(wifi_server_base(), storage_device_id(), storage_token(), PHASES[PH_VALIDATING], m.fw_version, attempt);
+
     // Flash with the radio down; the frame reboots straight after.
     wifi_off();
     if (!write_partition(&slot, m.size_bytes)) {
@@ -326,6 +382,7 @@ void ota_offer(const char *payload, const char *signature, const char *kind, boo
     report(PH_PENDING_CONFIRM, R_OK, m.fw_version, attempt, "");
     storage_commit();
     LOGI("ota: rebooting into %s for its trial boot", m.fw_version);
+    diag_carry_save();   // the trial boot sends it with its confirmed / rolled_back log
     stdio_flush();
     rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 100, XIP_BASE + slot.start, 0);
     while (true) tight_loop_contents();

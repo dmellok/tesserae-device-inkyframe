@@ -147,6 +147,20 @@ reported on the next check-in and re-sent until the server has it; it is kept in
 flash, so a frame on battery still reports it after powering off. On battery
 each wake is a fresh boot, so the ring holds that wake's log.
 
+A Pico 2 W Frame also sends its own **OTA log** of each update attempt, without
+being asked, which Tesserae shows under **OTA logs** on the device page
+(`X-Tesserae-Log-Kind: ota`, with the phase, target version and attempt id).
+One goes out when an attempt ends in the same wake (refused by the battery
+gate, or failed), just before the reboot into a new image (the download and its
+checks), and on the boot that settles it (`confirmed`, or `rolled_back` back on
+the old image). The log of the slot write, and of a trial boot that gives up,
+is kept in PSRAM over the reboot and sent at the head of the next OTA log;
+PSRAM keeps it only while the frame stays powered, so a trial that hangs until
+the watchdog fires sends what came before the reboot, not the hang itself. A
+frame sends at most one OTA log per change of attempt, phase and reason (kept
+in flash, so a frame on a low battery does not upload one every wake), retries
+a failed upload on a later wake, and never lets one hold up the install.
+
 ## HTTPS
 
 Requests to `https://` URLs (update images, the cloud relay) use TLS 1.2
