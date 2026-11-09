@@ -37,11 +37,15 @@ typedef struct {
     uint8_t always_on;
     uint8_t backoff;
     uint8_t fallback_kind;
-    uint8_t reserved;          // bit 0: portal offered this outage
+    uint8_t reserved;          // bit 0: portal offered this outage; bit 1: OTA log key seeded
     // OTA report (ota.c), carried across reboots and the A/B switch.
     uint8_t ota_phase;
     uint8_t ota_reason;
-    uint8_t ota_pad[2];
+    // The report the last OTA log went out for (phase, reason; the attempt as
+    // a 24-bit hash in what was diag padding). Kept in former padding so the
+    // layout, and an older firmware a rollback returns to, are unchanged.
+    uint8_t ota_log_phase;
+    uint8_t ota_log_reason;
     char ota_target[24];
     char ota_attempt[12];
     char ota_detail[40];
@@ -49,7 +53,7 @@ typedef struct {
     uint32_t diag_id;          // 0 = none
     uint32_t diag_at;
     uint8_t diag_code;
-    uint8_t diag_pad[3];
+    uint8_t ota_log_attempt[3];
     uint32_t crc;
 } record_t;
 
@@ -59,6 +63,8 @@ typedef struct {
 #define CRC_OFFSET_V2 offsetof(record_t, diag_id)
 
 _Static_assert(sizeof(record_t) <= RECORD_SIZE, "record too large");
+_Static_assert(offsetof(record_t, ota_target) == offsetof(record_t, ota_phase) + 4, "OTA log key moved the layout");
+_Static_assert(offsetof(record_t, crc) == offsetof(record_t, diag_code) + 4, "OTA log key moved the layout");
 
 static record_t s_rec;
 static bool s_dirty;
@@ -266,6 +272,26 @@ void storage_set_diag(uint32_t id, uint32_t at, uint8_t code)
 {
     if (s_rec.diag_id != id || s_rec.diag_at != at || s_rec.diag_code != code) {
         s_rec.diag_id = id; s_rec.diag_at = at; s_rec.diag_code = code; s_dirty = true;
+    }
+}
+
+void storage_get_ota_log_sent(uint8_t *phase, uint8_t *reason, uint32_t *attempt_hash, bool *ota_log_key_set)
+{
+    *phase = s_rec.ota_log_phase; *reason = s_rec.ota_log_reason;
+    *attempt_hash = (uint32_t)s_rec.ota_log_attempt[0] | (uint32_t)s_rec.ota_log_attempt[1] << 8 |
+                    (uint32_t)s_rec.ota_log_attempt[2] << 16;
+    *ota_log_key_set = (s_rec.reserved & 2) != 0;
+}
+
+void storage_set_ota_log_sent(uint8_t phase, uint8_t reason, uint32_t attempt_hash)
+{
+    uint8_t a0 = (uint8_t)attempt_hash, a1 = (uint8_t)(attempt_hash >> 8), a2 = (uint8_t)(attempt_hash >> 16);
+    if (s_rec.ota_log_phase != phase || s_rec.ota_log_reason != reason || !(s_rec.reserved & 2) ||
+        s_rec.ota_log_attempt[0] != a0 || s_rec.ota_log_attempt[1] != a1 || s_rec.ota_log_attempt[2] != a2) {
+        s_rec.ota_log_phase = phase; s_rec.ota_log_reason = reason;
+        s_rec.ota_log_attempt[0] = a0; s_rec.ota_log_attempt[1] = a1; s_rec.ota_log_attempt[2] = a2;
+        s_rec.reserved |= 2;
+        s_dirty = true;
     }
 }
 

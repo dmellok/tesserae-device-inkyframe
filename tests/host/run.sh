@@ -39,3 +39,7 @@ cc -std=gnu11 -O1 -Wall -Wextra -I"$SRC" -I"$SRC/vendor" test_deck.c "$SRC/deck.
 .deps/test_deck
 cc -std=gnu11 -O1 -Wall -Wextra -I"$SRC" -I"$SRC/vendor" test_frame_collection.c "$SRC/frame_collection.c" "$SRC/vendor/cJSON.c" -o .deps/test_frame_collection
 .deps/test_frame_collection
+
+# The log ring the log uploads and OTA logs copy from (Pico SDK stubbed).
+cc -std=gnu11 -O1 -Wall -Wextra -Istubs -I"$SRC" test_log.c "$SRC/log.c" -o .deps/test_log
+.deps/test_log > /dev/null   # stdout is the logged lines; results are on stderr

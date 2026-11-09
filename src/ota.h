@@ -39,6 +39,14 @@ void ota_abandon_trial(const char *detail);
 // Add the "ota" capability and report to a /register or /status body.
 void ota_add_capability(cJSON *body);
 
+// OTA logs (contract "OTA logs"): send this boot's log, tagged as an OTA
+// log, if the saved report is one that goes with one (failed, confirmed,
+// rolled_back, or rejected by the battery gate) and none has gone out for its
+// (attempt_id, phase, reason) yet. Best-effort and bounded; a failure leaves it
+// due for a later wake. Call with Wi-Fi up, after the /status that carried the
+// report. The install also sends one itself just before its reboot.
+void ota_log_flush(const char *base);
+
 // A descriptor arrived on /status (Wi-Fi up). Verifies, checks the battery,
 // downloads, installs and reboots into the new image (never returns then);
 // otherwise records why not and returns.

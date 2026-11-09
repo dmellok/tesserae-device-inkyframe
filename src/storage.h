@@ -49,6 +49,11 @@ void storage_set_portal_offered(bool v);
 void storage_get_ota(uint8_t *phase, uint8_t *reason, const char **target, const char **attempt, const char **detail);
 void storage_set_ota(uint8_t phase, uint8_t reason, const char *target, const char *attempt, const char *detail);
 
+// The report the last OTA log was sent for (ota.c): phase, reason and a hash
+// of attempt_id. ota_log_key_set is false until the key was first seeded.
+void storage_get_ota_log_sent(uint8_t *phase, uint8_t *reason, uint32_t *attempt_hash, bool *ota_log_key_set);
+void storage_set_ota_log_sent(uint8_t phase, uint8_t reason, uint32_t attempt_hash);
+
 // The last paint failure (diag.c owns the codes); id 0 = none.
 void storage_get_diag(uint32_t *id, uint32_t *at, uint8_t *code);
 void storage_set_diag(uint32_t id, uint32_t at, uint8_t code);

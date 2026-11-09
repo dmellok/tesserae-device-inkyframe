@@ -362,6 +362,7 @@ static void always_on_loop(const char *base)
                 set_clock(s.server_time);
                 diag_acknowledge(s.diag_sent);
                 if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
+                ota_log_flush(base);
                 if (s.always_on == 0) { LOGI("always-on: turned off by config"); storage_set_always_on(false); return; }
                 if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
                 next_poll = (s.next_poll_s > 0 && s.next_poll_s < 300) ? s.next_poll_s : storage_awake_poll_s();
@@ -613,11 +614,16 @@ static int32_t cycle(int wake_button)
         diag_acknowledge(s.diag_sent);
         if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
         cache_note_status(s.deck_version, s.has_deck, s.album_version, s.has_album, base, storage_device_id(), storage_token());
+        // An OTA log for the report this beat carried (a confirmed or
+        // rolled_back resolved at boot), before an offer can replace it.
+        ota_log_flush(base);
         // A signed update: on success this installs and reboots into it.
         if (s.ota_payload) ota_offer(s.ota_payload, s.ota_signature, current_kind(), s_on_usb, vsys);
 #ifdef OTA_BENCH_DESCRIPTOR_URL
         else bench_offer(vsys);
 #endif
+        // ...and one for an attempt that ended in this wake (battery gate, failed).
+        ota_log_flush(base);
     }
     storage_set_backoff(0);
 
@@ -710,6 +716,7 @@ int main(void)
     if (s_screen > SCREEN_ERROR) s_screen = SCREEN_UNKNOWN;
     epd_init();
     if (!psram_init() || !psram_test()) LOGE("psram: FAILED; frames cannot be stored");
+    else diag_carry_begin();
     cache_begin();
     LOGI("device id '%s', kind '%s', screen state %u, rtc %s (%lu)", storage_device_id(), current_kind(), s_screen,
          pcf_time_valid() ? "valid" : "unset", (unsigned long)pcf_get_epoch());
