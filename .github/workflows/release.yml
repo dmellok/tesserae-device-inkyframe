@@ -2,7 +2,8 @@ name: release
 
 # On a published GitHub Release: build every frame's USB image, the A/B
 # partition table and the over-the-air image, attach them, and sign the OTA
-# image for pimoroni_inky_frame_73. The descriptor is attached as
+# image for pimoroni_inky_frame_73, and publish the USB images to the R2
+# bucket the tesserae.ink web flasher reads (publish-r2 below). The descriptor is attached as
 # descriptor-pimoroni_inky_frame_73.json, which is what api.tesserae.ink's
 # firmware feed looks for; a Tesserae server then offers the update to its
 # Pico 2 W Spectra Frames (Settings > Firmware).
@@ -107,6 +108,64 @@ jobs:
           else
             echo "no GitHub release for $tag; the images are the 'images' artifact"
           fi
+
+  # The tesserae.ink web flasher (/flash/inky-frame) fetches the USB images
+  # same-origin from the tesserae-firmware R2 bucket and checks each against
+  # the SHA-256 in inkyframe/catalog.json before writing a byte. This repo owns
+  # that catalog file outright (the ESP32 firmware's catalog.json is separate),
+  # so two pipelines never race over one object. Images go under a versioned
+  # prefix and are never overwritten; the catalog is uploaded last, so it only
+  # ever points at images that are already there. Pre-releases are skipped.
+  #
+  # Needs repo secrets CLOUDFLARE_API_TOKEN (R2 edit) and CLOUDFLARE_ACCOUNT_ID.
+  publish-r2:
+    needs: build
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    env:
+      R2_BUCKET: tesserae-firmware
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: images
+          path: dist
+      - name: Install wrangler
+        run: npm i -g wrangler
+      - name: Upload images + catalog to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          tag='${{ needs.build.outputs.version }}'
+          fw='${{ needs.build.outputs.fw_version }}'
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "CLOUDFLARE_API_TOKEN is not set; skipping the R2 publish" >&2
+            exit 1
+          fi
+          put() {  # put <file> <key> [content-type]; retried, as the API sometimes 502s
+            for i in 1 2 3 4; do
+              if wrangler r2 object put "$R2_BUCKET/$2" --file "$1" --remote ${3:+--content-type "$3"}; then return 0; fi
+              sleep $((i * 5))
+            done
+            return 1
+          }
+          entry() {  # entry <model> <file>
+            f="dist/$2"; test -f "$f"
+            printf '"%s":{"path":"inkyframe/%s/%s","sha256":"%s","size":%s}' \
+              "$1" "$tag" "$2" "$(sha256sum "$f" | awk '{print $1}')" "$(stat -c%s "$f")"
+          }
+          {
+            printf '{"version":"%s","tag":"%s","published":"%s","images":{' "$fw" "$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            entry pico2w-spectra "inkyframe-spectra-pico2w-$fw.uf2"; printf ','
+            entry picow-spectra "inkyframe-spectra-picow-$fw.uf2"; printf ','
+            entry picow-acep "inkyframe-acep-picow-$fw.uf2"; printf ','
+            entry pico2w-partition-table "inkyframe-pico2w-partition-table.uf2"
+            printf '}}\n'
+          } > catalog.json
+          jq . catalog.json
+          for f in dist/*.uf2; do put "$f" "inkyframe/$tag/$(basename "$f")"; done
+          put catalog.json inkyframe/catalog.json application/json
 
   sign:
     needs: build

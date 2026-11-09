@@ -52,6 +52,15 @@ paints eight bars, and the third bar is green on ACeP and red on Spectra 6.
 
 ## Build and flash
 
+**No toolchain:** flash a released build from Chrome or Edge at
+[tesserae.ink/flash/inky-frame](https://tesserae.ink/flash/inky-frame). It talks
+to the Pico's bootloader over WebUSB, writes the A/B partition table and slot A
+on a Pico 2 W (what `tools/install_partitions.sh` does), reads every sector back,
+and leaves Wi-Fi, server and pairing alone unless you ask for a factory reset.
+The release workflow publishes those images to R2 (`publish-r2`).
+
+To build it yourself:
+
 Requires [PlatformIO](https://platformio.org/) (the VS Code extension, or
 `~/.platformio/penv/bin/pio`). It downloads the ARM toolchain, the Pico SDK and
 picotool on the first build; nothing else needs installing.
