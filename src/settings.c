@@ -219,6 +219,14 @@ const uint8_t *settings_relay_priv(void) { return s_rec.relay_has_priv ? s_rec.r
 
 static bool s_relay_dirty;
 
+void settings_learn_ip(const char *ip)
+{
+    if (!ip || !ip[0] || strlen(ip) >= SETTINGS_IP_MAX || strcmp(ip, s_rec.fallback_ip) == 0) return;
+    copy(s_rec.fallback_ip, sizeof s_rec.fallback_ip, ip);
+    LOGI("settings: remembering %s as the server's address", ip);
+    s_relay_dirty = true;
+}
+
 static void wipe_relay_pairing(void)
 {
     memset(s_rec.relay_install, 0, sizeof s_rec.relay_install);
@@ -276,6 +284,7 @@ void settings_relay_drop(bool keep_code)
     s_relay_dirty = true;
 }
 
+// Written by settings_relay_* and settings_learn_ip.
 void settings_commit(void)
 {
     if (!s_relay_dirty) return;

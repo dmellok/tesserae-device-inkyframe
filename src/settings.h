@@ -64,3 +64,8 @@ void settings_relay_set_config_etag(const char *etag);
 // A revoked pairing (401) or an expired code: forget the pairing.
 void settings_relay_drop(bool keep_code);
 void settings_commit(void);
+
+// The server answered at this IP (its .local name resolved to it, or the
+// fallback was used): keep it as the fallback for wakes where mDNS gets no
+// answer. RAM only until settings_commit().
+void settings_learn_ip(const char *ip);

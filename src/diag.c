@@ -11,6 +11,8 @@
 #include "json_num.h"
 #include "log.h"
 #include "psram.h"
+#include "sdcard.h"
+#include "vendor/fatfs/ff.h"
 #include "rtc.h"
 #include "settings.h"
 #include "storage.h"
@@ -245,4 +247,50 @@ bool diag_upload_ota_log(const char *base, const char *device_id, const char *to
         if (s_carry_len) { s_carry_len = 0; carry_write_header(0); }
     }
     return ok;
+}
+
+// ---- logs of failed wakes, kept on the SD card ----
+// On battery a wake that cannot reach the server powers off with its log, so
+// nothing would ever show why. Its ring goes to the card instead, and the next
+// wake that reaches the server uploads it.
+
+#define FAILED_LOG_DIR  "/tesserae"
+#define FAILED_LOG_PATH FAILED_LOG_DIR "/failed-wake.log"
+
+void diag_save_failed_wake(void)
+{
+    if (!sdcard_mounted() && !sdcard_mount()) return;
+    size_t cap = LOG_RING_BYTES + 256;
+    char *body = malloc(cap + 1);
+    if (!body) return;
+    int h = log_header(body, cap, " kind=failed-wake");
+    size_t n = (size_t)h + log_ring_copy(body + h, cap - (size_t)h);
+    blank(body, n, storage_token());
+    blank(body, n, settings_pass());
+    f_mkdir(FAILED_LOG_DIR);
+    FIL f;
+    UINT put = 0;
+    bool ok = f_open(&f, FAILED_LOG_PATH, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK;
+    if (ok) { ok = f_write(&f, body, (UINT)n, &put) == FR_OK && put == n; ok = f_close(&f) == FR_OK && ok; }
+    free(body);
+    LOGI("diag: failed wake's log %s the SD card", ok ? "saved to" : "could not be saved to");
+}
+
+void diag_upload_failed_wake(const char *base, const char *device_id, const char *token)
+{
+    if (!token || !token[0] || !sdcard_mounted()) return;
+    FIL f;
+    if (f_open(&f, FAILED_LOG_PATH, FA_READ) != FR_OK) return;
+    size_t len = (size_t)f_size(&f);
+    if (len > LOG_RING_BYTES + 256) len = LOG_RING_BYTES + 256;
+    char *body = malloc(len + 1);
+    UINT got = 0;
+    bool ok = body && f_read(&f, body, (UINT)len, &got) == FR_OK;
+    f_close(&f);
+    if (!ok) { free(body); return; }
+    for (UINT i = 0; i < got; i++) if (!body[i]) body[i] = '?';
+    int code = post_log(base, device_id, token, body, got, NULL, 0, HTTP_TIMEOUT_STATUS_MS);
+    free(body);
+    LOGI("diag: uploaded a failed wake's log, %u bytes (http %d)", (unsigned)got, code);
+    if (code >= 200 && code < 300) f_unlink(FAILED_LOG_PATH);
 }

@@ -152,7 +152,10 @@ void tess_get_frame(const char *base, const char *device_id, const char *token, 
     if (etag && etag[0]) { snprintf(inm, sizeof inm, "If-None-Match: \"%s\"", etag); hdrs[1] = inm; nh = 2; }
 
     http_resp_t r;
-    http_request("GET", url, hdrs, nh, NULL, &r, NULL, NULL, NULL, HTTP_TIMEOUT_FRAME_MS, 0);
+    // A button press is answered after the server has acted on it, which for
+    // Refresh or a page change means rendering the dashboard first: allow for that.
+    uint32_t timeout = button && button[0] ? HTTP_TIMEOUT_FRAME_BUTTON_MS : HTTP_TIMEOUT_FRAME_MS;
+    http_request("GET", url, hdrs, nh, NULL, &r, NULL, NULL, NULL, timeout, 0);
     out->code = r.status;
     snprintf(out->etag, sizeof out->etag, "%s", r.etag);
     if (r.status == 200 && r.body) {

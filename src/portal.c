@@ -334,7 +334,9 @@ static volatile bool  s_client_seen;      /* set on each connection; resets idle
 typedef struct {
     char     req[REQ_MAX];
     size_t   req_len;
+    char    *resp;          /* this connection's copy of the response */
     size_t   resp_total;
+    size_t   queued;        /* bytes handed to lwIP so far */
     size_t   acked;
     bool     reboot_after;
 } conn_t;
@@ -345,7 +347,7 @@ static void conn_close(struct tcp_pcb *pcb, conn_t *c)
     tcp_recv(pcb, NULL);
     tcp_sent(pcb, NULL);
     tcp_err(pcb, NULL);
-    if (c) free(c);
+    if (c) { free(c->resp); free(c); }
     tcp_close(pcb);
 }
 
@@ -424,11 +426,28 @@ static void save_form(const char *body)
     LOGI("portal: saved (ssid '%s', server '%s'%s)", ssid, surl, new_code ? ", pairing code" : "");
 }
 
+/* Queue as much of the response as the send buffer takes. The page is larger
+ * than TCP_SND_BUF, so it goes out over several calls, from sent_cb as the
+ * browser acknowledges what it has. */
+static void pump(struct tcp_pcb *pcb, conn_t *c)
+{
+    while (c->queued < c->resp_total) {
+        size_t n = c->resp_total - c->queued;
+        u16_t room = tcp_sndbuf(pcb);
+        if (n > room) n = room;
+        if (n == 0 || tcp_sndqueuelen(pcb) >= TCP_SND_QUEUELEN) break;
+        if (tcp_write(pcb, c->resp + c->queued, (u16_t)n, TCP_WRITE_FLAG_COPY) != ERR_OK) break;
+        c->queued += n;
+    }
+    tcp_output(pcb);
+}
+
 static err_t sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len)
 {
     conn_t *c = (conn_t *)arg;
     if (!c) return ERR_OK;
     c->acked += len;
+    if (c->queued < c->resp_total) pump(pcb, c);
     if (c->acked >= c->resp_total) {
         bool reboot = c->reboot_after;
         conn_close(pcb, c);
@@ -439,11 +458,14 @@ static err_t sent_cb(void *arg, struct tcp_pcb *pcb, u16_t len)
 
 static void send_response(struct tcp_pcb *pcb, conn_t *c, size_t total)
 {
+    free(c->resp);
+    c->resp = malloc(total);
+    if (!c->resp) { LOGW("portal: no memory for a %u-byte response", (unsigned)total); conn_close(pcb, c); return; }
+    memcpy(c->resp, s_resp, total);
     c->resp_total = total;
-    c->acked = 0;
+    c->queued = c->acked = 0;
     tcp_sent(pcb, sent_cb);
-    tcp_write(pcb, s_resp, (u16_t)total, TCP_WRITE_FLAG_COPY);
-    tcp_output(pcb);
+    pump(pcb, c);
 }
 
 static void handle_request(struct tcp_pcb *pcb, conn_t *c)
@@ -500,7 +522,8 @@ static err_t recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 static void err_cb(void *arg, err_t err)
 {
     (void)err;
-    if (arg) free(arg);   /* pcb already freed by lwIP */
+    conn_t *c = (conn_t *)arg;
+    if (c) { free(c->resp); free(c); }   /* pcb already freed by lwIP */
 }
 
 static err_t accept_cb(void *arg, struct tcp_pcb *pcb, err_t err)

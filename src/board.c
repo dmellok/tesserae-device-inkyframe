@@ -8,6 +8,7 @@
 #include "config.h"
 
 static wake_event_t s_wake = WAKE_UNKNOWN;
+static uint8_t s_boot_sr;
 static const uint8_t LED_PINS[LED_COUNT] = {
     PIN_LED_ACTIVITY, PIN_LED_CONNECTION, PIN_LED_A, PIN_LED_B, PIN_LED_C, PIN_LED_D, PIN_LED_E
 };
@@ -55,6 +56,7 @@ void board_init(void)
     gpio_set_dir(PIN_SR_OUT, GPIO_IN);
 
     uint8_t sr = board_read_sr();
+    s_boot_sr = sr;
     if (sr & SR_BUTTON_A) s_wake = WAKE_BUTTON_A;
     if (sr & SR_BUTTON_B) s_wake = WAKE_BUTTON_B;
     if (sr & SR_BUTTON_C) s_wake = WAKE_BUTTON_C;
@@ -67,6 +69,7 @@ void board_init(void)
 }
 
 wake_event_t board_wake_event(void) { return s_wake; }
+uint8_t board_boot_sr(void) { return s_boot_sr; }
 
 bool board_button_down(int index)
 {

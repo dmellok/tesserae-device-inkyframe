@@ -264,7 +264,7 @@ const char *wifi_server_base(void)
             snprintf(s_resolved, sizeof s_resolved, "%s", settings_fallback_ip());
             LOGW("mdns: %s did not resolve; using fallback %s", host, s_resolved);
         } else {
-            LOGE("mdns: %s did not resolve and no fallback IP is set", host);
+            LOGE("mdns: %s did not resolve and no address is remembered for it", host);
             return "";
         }
         use_host = s_resolved;
@@ -274,6 +274,8 @@ const char *wifi_server_base(void)
     while (l && s_base[l - 1] == '/') s_base[--l] = 0;
     return s_base;
 }
+
+const char *wifi_server_ip(void) { return s_resolved; }
 
 void wifi_rewrite_host(const char *url, char *out, size_t cap)
 {

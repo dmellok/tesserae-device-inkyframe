@@ -53,5 +53,11 @@ void diag_carry_save(void);
 // report's phase / target_fw / attempt_id (each omitted when empty). Bounded
 // by OTA_LOG_TIMEOUT_MS. Returns true when the server stored it, and then
 // drops the carried tail. Wi-Fi up.
+// A wake that could not reach the server: save its log to the SD card (when
+// one is in) so the next good wake can upload it. Call with the radio down.
+void diag_save_failed_wake(void);
+// Wi-Fi up, server reached: upload a saved failed-wake log, then delete it.
+void diag_upload_failed_wake(const char *base, const char *device_id, const char *token);
+
 bool diag_upload_ota_log(const char *base, const char *device_id, const char *token,
                          const char *phase, const char *target, const char *attempt);

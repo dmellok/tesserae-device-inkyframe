@@ -40,7 +40,7 @@
 
 // What is on the glass, kept in the RTC's RAM byte across power-off so status
 // pages draw once and a frame is re-fetched without ETag after one was shown.
-enum { SCREEN_UNKNOWN = 0, SCREEN_FRAME, SCREEN_PAIRING, SCREEN_NO_DASHBOARD, SCREEN_ERROR };
+enum { SCREEN_UNKNOWN = 0, SCREEN_FRAME, SCREEN_PAIRING, SCREEN_NO_DASHBOARD, SCREEN_ERROR, SCREEN_CONNECTED };
 
 static const int32_t BACKOFF_S[] = BACKOFF_STEPS_S;
 #define BACKOFF_N ((int)(sizeof BACKOFF_S / sizeof BACKOFF_S[0]))
@@ -98,9 +98,12 @@ static int32_t fail_backoff(const char *what, const char *detail)
     LOGW("%s: %s (backoff stage %u, sleeping %ld s)", what, detail, stage, (long)sleep_s);
     bool persistent = stage >= 2 || s_boot_count <= 1 || s_screen == SCREEN_UNKNOWN;
     wifi_off();
+    diag_save_failed_wake();
     if (persistent && s_screen != SCREEN_ERROR) {
         static char server[200];
-        snprintf(server, sizeof server, "Server: %s", settings_server_url());
+        const char *ip = wifi_server_ip();
+        if (ip[0]) snprintf(server, sizeof server, "Server: %s (tried %s)", settings_server_url(), ip);
+        else snprintf(server, sizeof server, "Server: %s", settings_server_url());
         screen_message(what, detail, "Retrying. Hold Refresh 5 s to change setup.", server);
         set_screen(SCREEN_ERROR);
     }
@@ -165,7 +168,12 @@ static int32_t server_unreachable(void)
 {
     static char reason[200];
     snprintf(reason, sizeof reason, "Can't reach the Tesserae server at %s.", settings_server_url());
-    return setup_or_backoff("Server unreachable", "Could not reach the Tesserae server.", reason);
+    // No IP at all means the .local name got no mDNS answer and none is remembered.
+    bool local = strstr(settings_server_url(), ".local") != NULL;
+    const char *detail = !local || wifi_server_ip()[0] || !wifi_connected()
+        ? "Could not reach the Tesserae server."
+        : "Could not find the Tesserae server on the network.";
+    return setup_or_backoff("Server unreachable", detail, reason);
 }
 
 // No token: announce on /discover (or /register with a pairing code) until
@@ -280,6 +288,20 @@ static void paint_downloaded(const char *etag)
     board_led(LED_ACTIVITY, 20);
 }
 
+// The server answered but there is no new frame to paint, while the glass still
+// shows setup, an error or the pairing page: say it worked, so setup has an end
+// (the ESP32 firmware's "Connected!" splash). The dashboard follows on a later wake.
+static void connected_page(void)
+{
+    static char l3[200];
+    const char *ip = wifi_server_ip();
+    if (ip[0]) snprintf(l3, sizeof l3, "Server: %s (%s)", settings_server_url(), ip);
+    else snprintf(l3, sizeof l3, "Server: %s", settings_server_url());
+    screen_message("Connected!", "This frame reached the Tesserae server.",
+                   "Waiting for your first frame: it appears on the next update.", l3);
+    set_screen(SCREEN_CONNECTED);
+}
+
 static void no_dashboard_page(void)
 {
     if (s_screen == SCREEN_NO_DASHBOARD) return;
@@ -362,6 +384,7 @@ static void always_on_loop(const char *base)
                 set_clock(s.server_time);
                 diag_acknowledge(s.diag_sent);
                 if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
+                diag_upload_failed_wake(base, storage_device_id(), storage_token());
                 ota_log_flush(base);
                 if (s.always_on == 0) { LOGI("always-on: turned off by config"); storage_set_always_on(false); return; }
                 if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
@@ -596,6 +619,14 @@ static int32_t cycle(int wake_button)
     uint32_t event_id = button >= 0 ? storage_next_event_id() : 0;
     bool downloaded = false; char etag[80] = "";
     int frame_code = fetch_frame(base, &button, event_id, &downloaded, etag, sizeof etag);
+    if (frame_code == HTTP_ERR_TIMEOUT && wake_button >= 0) {
+        // The server took the press but is still rendering: that is not an
+        // outage. Keep the screen as it is and collect the new frame shortly.
+        LOGW("frame: no answer to the %s press in %d s; fetching again in %d s", button_name(wake_button),
+             HTTP_TIMEOUT_FRAME_BUTTON_MS / 1000, SLOW_RENDER_RETRY_S);
+        wifi_off();
+        return SLOW_RENDER_RETRY_S;
+    }
     if (frame_code <= 0) return server_unreachable();
     if (!storage_token()[0]) { wifi_off(); return 30; }   // re-pair next wake
 
@@ -613,6 +644,7 @@ static int32_t cycle(int wake_button)
         if (s.awake_poll_s > 0) storage_set_awake_poll_s(s.awake_poll_s);
         diag_acknowledge(s.diag_sent);
         if (s.logs_upload) diag_upload_log(base, storage_device_id(), storage_token());
+        diag_upload_failed_wake(base, storage_device_id(), storage_token());
         cache_note_status(s.deck_version, s.has_deck, s.album_version, s.has_album, base, storage_device_id(), storage_token());
         // An OTA log for the report this beat carried (a confirmed or
         // rolled_back resolved at boot), before an offer can replace it.
@@ -635,6 +667,7 @@ static int32_t cycle(int wake_button)
         paint_downloaded(etag);
         if (pcf_time_valid()) cache_note_network_frame(pcf_get_epoch());
     } else if (frame_code == 204) no_dashboard_page();
+    else if (s_screen == SCREEN_UNKNOWN || s_screen == SCREEN_ERROR || s_screen == SCREEN_PAIRING) connected_page();
 
     if (linger) button_linger(base, storage_button_wake_s());
     if (always_on) always_on_loop(base);
@@ -656,7 +689,8 @@ static int32_t cycle(int wake_button)
 // Write what the cycle learnt about the settings (radio is down by now).
 static void settle_settings(void)
 {
-    settings_commit();   // relay pairing state, if it changed
+    if (s_reached_server) settings_learn_ip(wifi_server_ip());
+    settings_commit();   // relay pairing state and the server's address, if they changed
     cache_commit();      // deck page and album position, if they changed
     if (s_reached_server) settings_set_verified();
     if (s_used_pairing_code) settings_clear_pairing_code();
@@ -668,7 +702,14 @@ static void settle_settings(void)
 static bool handle_setup_hold(void)
 {
     const int b = BUTTON_SETUP_INDEX;
-    if (!board_button_down(b)) return false;
+    if (!board_button_down(b)) {
+        if (board_wake_event() == WAKE_BUTTON_A + b)
+            LOGW("setup: woken by Refresh but it is not down now (sr at boot 0x%02x, now 0x%02x, %lu ms after boot)",
+                 board_boot_sr(), board_read_sr(), (unsigned long)to_ms_since_boot(get_absolute_time()));
+        return false;
+    }
+    LOGI("setup: Refresh down at %lu ms after boot (sr 0x%02x)", (unsigned long)to_ms_since_boot(get_absolute_time()),
+         board_read_sr());
     absolute_time_t start = get_absolute_time();
     bool setup_lit = false;
     while (board_button_down(b)) {
@@ -713,7 +754,7 @@ int main(void)
     pcf_init();
     diag_begin(board_wake_name(wake));
     s_screen = pcf_ram_get() & 0x0F;
-    if (s_screen > SCREEN_ERROR) s_screen = SCREEN_UNKNOWN;
+    if (s_screen > SCREEN_CONNECTED) s_screen = SCREEN_UNKNOWN;
     epd_init();
     if (!psram_init() || !psram_test()) LOGE("psram: FAILED; frames cannot be stored");
     else diag_carry_begin();
@@ -726,7 +767,11 @@ int main(void)
         wake_button = wake - WAKE_BUTTON_A;
         board_led_button(wake_button, 40);
     }
-    if (handle_setup_hold()) wake_button = -1;
+    // A Refresh wake on battery that does not open setup: keep this wake's log
+    // on the SD card (uploaded by the next wake that reaches the server), to see
+    // what the button looked like at boot. Diagnostic for the hold on battery.
+    bool keep_wake_log = wake == WAKE_BUTTON_A + BUTTON_SETUP_INDEX;
+    if (handle_setup_hold()) { wake_button = -1; keep_wake_log = false; }
 
     while (!settings_configured()) {
         open_portal("");
@@ -738,6 +783,8 @@ int main(void)
     while (true) {
         s_boot_count++;
         int32_t sleep_s = cycle(wake_button);
+        if (keep_wake_log && !s_on_usb) diag_save_failed_wake();
+        keep_wake_log = false;
         settle_settings();
         storage_commit();
         int pressed = -1;

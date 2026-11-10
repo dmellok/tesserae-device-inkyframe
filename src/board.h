@@ -34,6 +34,8 @@ typedef enum {
 void board_init(void);
 
 wake_event_t board_wake_event(void);
+// The shift register as board_init() first read it (buttons, RTC alarm, busy).
+uint8_t board_boot_sr(void);
 uint8_t board_read_sr(void);
 // Index 0..4 = A..E, live state.
 bool board_button_down(int index);

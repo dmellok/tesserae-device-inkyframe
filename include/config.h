@@ -169,6 +169,8 @@
 #define MDNS_QUERY_ATTEMPTS       3
 #define HTTP_TIMEOUT_DISCOVER_MS  10000
 #define HTTP_TIMEOUT_FRAME_MS     8000
+#define HTTP_TIMEOUT_FRAME_BUTTON_MS 30000   // a press: the server renders before it answers
+#define SLOW_RENDER_RETRY_S       30          // after a press the server was too slow to answer
 #define HTTP_TIMEOUT_STATUS_MS    10000
 #define HTTP_TIMEOUT_DOWNLOAD_MS  30000
 #define DOWNLOAD_STALL_TIMEOUT_MS 10000
