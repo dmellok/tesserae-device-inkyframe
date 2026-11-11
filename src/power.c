@@ -44,6 +44,15 @@ int32_t power_clamp_sleep_s(int32_t s)
     return s;
 }
 
+void power_hold_over_reboot(void)
+{
+    bool flag = pcf_assert_int();
+    sleep_ms(2);
+    uint8_t sr = board_read_sr();
+    if (flag && (sr & SR_RTC_ALARM)) LOGI("power: RTC holds the board on over the restart (sr 0x%02x)", sr);
+    else LOGW("power: the RTC is not holding the board on (flag %d, sr 0x%02x); on battery this restart powers off", flag, sr);
+}
+
 void power_sleep(uint32_t seconds, bool on_usb, int *button)
 {
     if (button) *button = -1;

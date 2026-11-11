@@ -721,6 +721,7 @@ static bool handle_setup_hold(void)
             storage_erase();
             set_screen(SCREEN_UNKNOWN);
             screen_message("Factory reset", "Wi-Fi, server and pairing are cleared.", "Restarting into setup.", "");
+            power_hold_over_reboot();
             watchdog_reboot(0, 0, 0);
             while (true) tight_loop_contents();
         }

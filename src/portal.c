@@ -23,6 +23,7 @@
 #include "board.h"
 #include "config.h"
 #include "log.h"
+#include "power.h"
 #include "screen.h"
 #include "settings.h"
 #include "storage.h"
@@ -618,6 +619,7 @@ bool portal_run(const char *reason)
     cyw43_arch_deinit();
     if (s_save_pending) save_form(s_pending_form);
     LOGI("portal: settings saved; rebooting");
+    power_hold_over_reboot();   // on battery the reset would power the frame off
     watchdog_reboot(0, 0, 0);
     while (true) tight_loop_contents();
 }

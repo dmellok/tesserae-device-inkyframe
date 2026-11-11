@@ -16,6 +16,10 @@ void pcf_set_epoch(uint32_t epoch);
 void pcf_arm_alarm_epoch(uint32_t epoch);
 // Wake in N minutes using the countdown timer (1..255) when the clock is unset.
 void pcf_arm_timer_minutes(uint8_t minutes);
+// Pull the INT line low now and leave it low (a countdown-timer flag raised
+// within ~50 ms), so the board stays powered with no help from the MCU.
+// pcf_init() of the next boot releases it. False if the flag never came up.
+bool pcf_assert_int(void);
 // Disable and clear alarm + timer (releases the INT line at boot).
 void pcf_disarm(void);
 bool pcf_alarm_fired(void);

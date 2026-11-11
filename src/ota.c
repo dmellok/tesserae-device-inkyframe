@@ -121,6 +121,7 @@ void ota_offer(const char *payload, const char *signature, const char *kind, boo
 
 #include "http.h"
 #include "ota_verify.h"
+#include "power.h"
 #include "psram.h"
 #include "sha256.h"
 #include "wifi.h"
@@ -213,6 +214,7 @@ void ota_abandon_trial(const char *why)
     wifi_off();
     storage_commit();
     LOGW("ota: abandoning the update (%s); rebooting to the previous image", why);
+    power_hold_over_reboot();
     diag_carry_save();   // the previous image sends it with its rolled_back log
     stdio_flush();
     watchdog_reboot(0, 0, 0);
@@ -382,6 +384,9 @@ void ota_offer(const char *payload, const char *signature, const char *kind, boo
     report(PH_PENDING_CONFIRM, R_OK, m.fw_version, attempt, "");
     storage_commit();
     LOGI("ota: rebooting into %s for its trial boot", m.fw_version);
+    // On battery the reset would otherwise cut the power, and the update
+    // could never start: the next wake would boot this image again.
+    power_hold_over_reboot();
     diag_carry_save();   // the trial boot sends it with its confirmed / rolled_back log
     stdio_flush();
     rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS, 100, XIP_BASE + slot.start, 0);

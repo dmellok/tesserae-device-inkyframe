@@ -167,6 +167,20 @@ void pcf_arm_timer_minutes(uint8_t minutes)
     reg_write(REG_TIMER_VALUE, timer, 2);
 }
 
+bool pcf_assert_int(void)
+{
+    uint8_t timer[2] = { 2, (uint8_t)((0x01 << 3) | 0x04 | 0x02) };   // 2 ticks of 64 Hz, TE, TIE, level INT
+    if (!reg_write(REG_TIMER_VALUE, timer, 2)) return false;
+    for (int i = 0; i < 50; i++) {
+        sleep_ms(10);
+        if (reg_read8(REG_CONTROL_2) & C2_TF) {
+            reg_write8(REG_TIMER_MODE, (uint8_t)((0x01 << 3) | 0x02));   // stop counting; TF and TIE stay
+            return true;
+        }
+    }
+    return false;
+}
+
 void pcf_disarm(void)
 {
     uint8_t tm = reg_read8(REG_TIMER_MODE);
